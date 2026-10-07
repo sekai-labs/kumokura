@@ -17,7 +17,7 @@
 - **Tri-Interface Support**:
   - **CLI (`kumokura`)**: Scriptable, human-friendly tables or pure JSON output.
   - **TUI (`kumokura-tui` / `kumokura tui`)**: Dual-pane keyboard-driven file manager built with Bubble Tea.
-  - **Desktop GUI (`kumokura-desktop`)**: Lightweight, compact Wails v2 + Vue 3 desktop app consuming <60MB RAM.
+  - **Desktop GUI (`kumokura-desktop`)**: Full native desktop app built with Fyne v2 (`fyne.io/fyne/v2`), hardware accelerated, consuming <60MB RAM with zero webview or browser dependencies.
 
 ---
 
@@ -29,11 +29,14 @@
 git clone https://github.com/sekai-labs/kumokura.git
 cd kumokura
 
+# Build all binaries via Makefile
 make build
+
 # Or individually:
 go build -o bin/kumokura ./cmd/kumokura
 go build -o bin/kumokura-tui ./cmd/kumokura-tui
-go build -tags "desktop,production,webkit2_41" -o bin/kumokura-desktop ./cmd/kumokura-desktop
+go build -tags wayland -o bin/kumokura-desktop ./cmd/kumokura-desktop
+```
 
 ### Adding Your First Storage Account
 
@@ -77,7 +80,7 @@ Kumokura is organized around Domain-Driven Design (DDD):
 - `internal/objects/`: Streaming object upload/download, pagination, presigned URLs.
 - `internal/transfers/`: Multi-part transfer manager, tiered buffers, SQLite checkpoints.
 - `internal/synchronization/`: Tree diff planner, conflict policies, glob pattern matching.
-- `desktop/frontend/`: Vue 3 + TypeScript SPA for the Wails desktop interface.
+- `internal/presentation/`: User interfaces (CLI via Cobra, TUI via Bubble Tea, Desktop GUI via Fyne v2).
 
 See the [Kumokura Wiki](https://github.com/sekai-labs/kumokura/wiki) for full architectural details.
 
