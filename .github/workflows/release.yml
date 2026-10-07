@@ -1,0 +1,131 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            archive_format: tar.gz
+          - os: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+            archive_format: tar.gz
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            archive_format: zip
+          - os: macos-13
+            goos: darwin
+            goarch: amd64
+            archive_format: tar.gz
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            archive_format: tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Install Linux GUI dependencies
+        if: matrix.goos == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev xorg-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev libxxf86vm-dev
+
+      - name: Build binaries (Unix)
+        if: matrix.goos != 'windows'
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 1
+        run: |
+          mkdir -p dist
+          TAGS_FLAG=""
+          if [ "${{ matrix.goos }}" = "linux" ]; then
+            TAGS_FLAG="-tags wayland"
+          fi
+          go build -o dist/kumokura ./cmd/kumokura
+          go build -o dist/kumokura-tui ./cmd/kumokura-tui
+          go build $TAGS_FLAG -o dist/kumokura-desktop ./cmd/kumokura-desktop
+
+      - name: Build binaries (Windows)
+        if: matrix.goos == 'windows'
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: 1
+        shell: bash
+        run: |
+          mkdir -p dist
+          go build -o dist/kumokura.exe ./cmd/kumokura
+          go build -o dist/kumokura-tui.exe ./cmd/kumokura-tui
+          go build -o dist/kumokura-desktop.exe ./cmd/kumokura-desktop
+
+      - name: Package archive (Unix)
+        if: matrix.archive_format == 'tar.gz'
+        shell: bash
+        run: |
+          TAG_NAME="${GITHUB_REF_NAME}"
+          ARCHIVE_NAME="kumokura_${TAG_NAME}_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz"
+          tar -czf "${ARCHIVE_NAME}" -C dist kumokura kumokura-tui kumokura-desktop
+          mkdir -p release-artifacts
+          mv "${ARCHIVE_NAME}" release-artifacts/
+
+      - name: Package archive (Windows)
+        if: matrix.archive_format == 'zip'
+        shell: bash
+        run: |
+          TAG_NAME="${GITHUB_REF_NAME}"
+          ARCHIVE_NAME="kumokura_${TAG_NAME}_${{ matrix.goos }}_${{ matrix.goarch }}.zip"
+          cd dist
+          7z a "../release-artifacts/${ARCHIVE_NAME}" kumokura.exe kumokura-tui.exe kumokura-desktop.exe
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: release-artifacts/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Generate SHA256 checksums
+        working-directory: release-artifacts
+        run: |
+          sha256sum * > checksums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-artifacts/*
+          token: ${{ secrets.GITHUB_TOKEN }}
