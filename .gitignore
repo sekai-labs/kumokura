@@ -1,0 +1,21 @@
+# Binaries & build artifacts
+bin/
+dist/
+build/
+
+# Dependencies
+vendor/
+node_modules/
+
+# Documentation and Specifications (Maintained separately on GitHub Wiki)
+docs/
+specs/
+wiki/
+
+# OS and IDE files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
