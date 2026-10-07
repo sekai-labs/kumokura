@@ -1,6 +1,7 @@
 package components
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -41,10 +42,10 @@ func (t *TabBar) Render(width int, activeAccount string, activeBucket string) st
 
 	var rightParts []string
 	if activeAccount != "" {
-		rightParts = append(rightParts, t.styles.BadgeAccount.Render("Acc: "+activeAccount))
+		rightParts = append(rightParts, t.styles.BadgeAccount.Render(fmt.Sprintf("Acc: %s", activeAccount)))
 	}
 	if activeBucket != "" {
-		rightParts = append(rightParts, t.styles.BadgeAccount.Render("Bucket: "+activeBucket))
+		rightParts = append(rightParts, t.styles.BadgeAccount.Render(fmt.Sprintf("Bucket: %s", activeBucket)))
 	}
 
 	right := lipgloss.JoinHorizontal(lipgloss.Top, rightParts...)

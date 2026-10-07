@@ -2,12 +2,13 @@ package domain
 
 import (
 	"errors"
+	"path/filepath"
 	"strings"
 	"time"
 )
-
 var (
-	ErrEmptyObjectKey = errors.New("object key cannot be empty")
+	ErrEmptyObjectKey    = errors.New("object key cannot be empty")
+	ErrPathTraversal     = errors.New("path traversal detected in object key")
 )
 
 type StorageClass string
@@ -85,8 +86,23 @@ type Object struct {
 }
 
 func ValidateObjectKey(key string) error {
-	if strings.TrimSpace(key) == "" {
+	trimmed := strings.TrimSpace(key)
+	if trimmed == "" {
 		return ErrEmptyObjectKey
+	}
+	if strings.Contains(key, "\x00") {
+		return ErrPathTraversal
+	}
+	clean := filepath.ToSlash(filepath.Clean(key))
+	if clean == ".." || strings.HasPrefix(clean, "../") || strings.Contains(clean, "/../") {
+		return ErrPathTraversal
+	}
+	if strings.Contains(key, "..") {
+		for _, segment := range strings.Split(key, "/") {
+			if segment == ".." {
+				return ErrPathTraversal
+			}
+		}
 	}
 	return nil
 }

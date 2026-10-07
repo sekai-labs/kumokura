@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/sekai-labs/kumokura/internal/synchronization/domain"
 	"github.com/sekai-labs/kumokura/internal/synchronization/ports"
@@ -100,12 +99,4 @@ func calculateLocalMD5(path string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
-func NormalizePrefix(prefix string) string {
-	clean := strings.Trim(prefix, "/")
-	if clean == "" {
-		return ""
-	}
-	return clean + "/"
 }

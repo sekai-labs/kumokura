@@ -75,12 +75,12 @@ func (v *ExplorerView) renderLeftPanel(width, height int) string {
 		var rowStr string
 		name := b.Name
 		if len(name) > width-4 {
-			name = name[:width-5] + "…"
+			name = fmt.Sprintf("%s…", name[:width-5])
 		}
 		if i == v.SelectedBucket && v.ActivePaneIndex == 0 {
-			rowStr = v.styles.SelectedRow.Width(width - 2).Render("> " + name)
+			rowStr = v.styles.SelectedRow.Width(width - 2).Render(fmt.Sprintf("> %s", name))
 		} else {
-			rowStr = v.styles.NormalRow.Width(width - 2).Render("  " + name)
+			rowStr = v.styles.NormalRow.Width(width - 2).Render(fmt.Sprintf("  %s", name))
 		}
 		rows = append(rows, rowStr)
 		if len(rows) >= height-4 {
@@ -107,13 +107,13 @@ func (v *ExplorerView) renderCenterPanel(width, height int) string {
 		var rowStr string
 		name := p.Prefix
 		if len(name) > width-15 {
-			name = name[:width-16] + "…"
+			name = fmt.Sprintf("%s…", name[:width-16])
 		}
 		display := fmt.Sprintf("📁 %-30s [DIR]", name)
 		if i == v.SelectedObject && v.ActivePaneIndex == 1 {
-			rowStr = v.styles.SelectedRow.Width(width - 2).Render("> " + display)
+			rowStr = v.styles.SelectedRow.Width(width - 2).Render(fmt.Sprintf("> %s", display))
 		} else {
-			rowStr = v.styles.NormalRow.Width(width - 2).Render("  " + display)
+			rowStr = v.styles.NormalRow.Width(width - 2).Render(fmt.Sprintf("  %s", display))
 		}
 		rows = append(rows, rowStr)
 		if len(rows) >= height-4 {
@@ -132,16 +132,16 @@ func (v *ExplorerView) renderCenterPanel(width, height int) string {
 			name = strings.TrimPrefix(name, v.CurrentPrefix)
 		}
 		if len(name) > width-25 {
-			name = name[:width-26] + "…"
+			name = fmt.Sprintf("%s…", name[:width-26])
 		}
 
 		sizeStr := formatBytes(obj.Size)
 		display := fmt.Sprintf("%-28s %10s %s", name, sizeStr, string(obj.StorageClass))
 		var rowStr string
 		if idx == v.SelectedObject && v.ActivePaneIndex == 1 {
-			rowStr = v.styles.SelectedRow.Width(width - 2).Render("> " + display)
+			rowStr = v.styles.SelectedRow.Width(width - 2).Render(fmt.Sprintf("> %s", display))
 		} else {
-			rowStr = v.styles.NormalRow.Width(width - 2).Render("  " + display)
+			rowStr = v.styles.NormalRow.Width(width - 2).Render(fmt.Sprintf("  %s", display))
 		}
 		rows = append(rows, rowStr)
 	}
@@ -159,11 +159,11 @@ func (v *ExplorerView) renderRightPanel(width, height int) string {
 	var lines []string
 
 	if v.PreviewMetadata != nil {
-		lines = append(lines, v.styles.StatusKey.Render("Type: ")+v.PreviewMetadata.ContentType)
-		lines = append(lines, v.styles.StatusKey.Render("Size: ")+formatBytes(v.PreviewMetadata.ContentLength))
-		lines = append(lines, v.styles.StatusKey.Render("ETag: ")+v.PreviewMetadata.ETag)
-		lines = append(lines, v.styles.StatusKey.Render("Class: ")+string(v.PreviewMetadata.StorageClass))
-		lines = append(lines, v.styles.StatusKey.Render("Modified: ")+v.PreviewMetadata.LastModified.Format("2006-01-02 15:04"))
+		lines = append(lines, fmt.Sprintf("%s%s", v.styles.StatusKey.Render("Type: "), v.PreviewMetadata.ContentType))
+		lines = append(lines, fmt.Sprintf("%s%s", v.styles.StatusKey.Render("Size: "), formatBytes(v.PreviewMetadata.ContentLength)))
+		lines = append(lines, fmt.Sprintf("%s%s", v.styles.StatusKey.Render("ETag: "), v.PreviewMetadata.ETag))
+		lines = append(lines, fmt.Sprintf("%s%s", v.styles.StatusKey.Render("Class: "), string(v.PreviewMetadata.StorageClass)))
+		lines = append(lines, fmt.Sprintf("%s%s", v.styles.StatusKey.Render("Modified: "), v.PreviewMetadata.LastModified.Format("2006-01-02 15:04")))
 
 		if len(v.PreviewTags) > 0 {
 			lines = append(lines, "")
@@ -178,7 +178,7 @@ func (v *ExplorerView) renderRightPanel(width, height int) string {
 			lines = append(lines, v.styles.PanelTitle.Render("Content Preview:"))
 			previewSnippet := v.PreviewContent
 			if len(previewSnippet) > 300 {
-				previewSnippet = previewSnippet[:300] + "..."
+				previewSnippet = fmt.Sprintf("%s...", previewSnippet[:300])
 			}
 			lines = append(lines, v.styles.StatusDesc.Render(previewSnippet))
 		}

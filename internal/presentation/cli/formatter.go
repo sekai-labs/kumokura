@@ -90,7 +90,7 @@ func (f *Formatter) PrintMessage(format string, a ...any) {
 	if f.JSONOut {
 		return
 	}
-	_, _ = fmt.Fprintf(f.Out, format+"\n", a...)
+	_, _ = fmt.Fprintf(f.Out, "%s\n", fmt.Sprintf(format, a...))
 }
 
 func (f *Formatter) PrintError(format string, a ...any) {
@@ -99,5 +99,5 @@ func (f *Formatter) PrintError(format string, a ...any) {
 		_ = json.NewEncoder(f.Err).Encode(map[string]string{"error": msg})
 		return
 	}
-	_, _ = fmt.Fprintf(f.Err, "Error: "+format+"\n", a...)
+	_, _ = fmt.Fprintf(f.Err, "Error: %s\n", fmt.Sprintf(format, a...))
 }

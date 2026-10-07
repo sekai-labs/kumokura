@@ -45,7 +45,7 @@ func NewTransferService(
 	maxConcurrency int,
 ) *TransferService {
 	if maxConcurrency <= 0 {
-		maxConcurrency = 16
+		maxConcurrency = 100
 	}
 	return &TransferService{
 		repo:           repo,
@@ -56,6 +56,20 @@ func NewTransferService(
 		activeJobs:     make(map[string]*activeJobContext),
 		metrics:        make(map[string]*domain.TransferMetrics),
 	}
+}
+
+func (s *TransferService) SetMaxConcurrency(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if n > 0 {
+		s.maxConcurrency = n
+	}
+}
+
+func (s *TransferService) GetMaxConcurrency() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.maxConcurrency
 }
 
 func (s *TransferService) SubmitJob(ctx context.Context, job domain.TransferJob) (string, error) {

@@ -2,13 +2,14 @@ package s3
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
-	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/sekai-labs/kumokura/internal/objects/domain"
 	"github.com/sekai-labs/kumokura/internal/objects/ports"
 )
@@ -280,9 +281,11 @@ func (s *S3ObjectStorage) DeleteObjects(ctx context.Context, bucket string, keys
 }
 
 func (s *S3ObjectStorage) CopyObject(ctx context.Context, srcBucket, srcKey, srcVersionID, destBucket, destKey string) error {
-	copySource := srcBucket + "/" + srcKey
+	var copySource string
 	if srcVersionID != "" {
-		copySource += "?versionId=" + srcVersionID
+		copySource = fmt.Sprintf("%s/%s?versionId=%s", srcBucket, srcKey, srcVersionID)
+	} else {
+		copySource = fmt.Sprintf("%s/%s", srcBucket, srcKey)
 	}
 
 	input := &s3.CopyObjectInput{
@@ -328,7 +331,7 @@ func (s *S3ObjectStorage) GetObjectMetadata(ctx context.Context, bucket string, 
 }
 
 func (s *S3ObjectStorage) SetObjectMetadata(ctx context.Context, bucket string, key string, metadata domain.ObjectMetadata) error {
-	copySource := bucket + "/" + key
+	copySource := fmt.Sprintf("%s/%s", bucket, key)
 	input := &s3.CopyObjectInput{
 		Bucket:            aws.String(bucket),
 		Key:               aws.String(key),

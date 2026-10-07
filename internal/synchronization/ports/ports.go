@@ -41,6 +41,7 @@ type SyncOptions struct {
 	DryRun           bool
 	TimeTolerance    time.Duration
 	Filter           domain.Filter
+	MaxConcurrency   int
 }
 
 type SyncEngine interface {

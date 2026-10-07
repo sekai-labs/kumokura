@@ -41,3 +41,27 @@ func TestEnsureDirs(t *testing.T) {
 		assert.True(t, info.IsDir())
 	}
 }
+
+func TestConfigSaveAndFolderConfig(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := &config.Config{
+		ConfigDir:             filepath.Join(tmp, "config"),
+		DataDir:               filepath.Join(tmp, "data"),
+		SecretsDir:            filepath.Join(tmp, "secrets"),
+		DBPath:                filepath.Join(tmp, "data", "test.db"),
+		LogLevel:              "DEBUG",
+		MaxUploadConcurrency: 100,
+	}
+	err := cfg.Save()
+	require.NoError(t, err)
+
+	folderDir := filepath.Join(tmp, "myfolder")
+	require.NoError(t, os.MkdirAll(folderDir, 0755))
+	folderCfgFile := filepath.Join(folderDir, ".kumokura.json")
+	require.NoError(t, os.WriteFile(folderCfgFile, []byte(`{"max_concurrency": 80}`), 0644))
+
+	fc, err := config.LoadFolderConfig(folderDir)
+	require.NoError(t, err)
+	require.NotNil(t, fc)
+	assert.Equal(t, 80, fc.MaxConcurrency)
+}

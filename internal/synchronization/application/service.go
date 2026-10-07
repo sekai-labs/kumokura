@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/sekai-labs/kumokura/internal/synchronization/domain"
@@ -220,10 +221,35 @@ func resolveConflictOrUpdate(item *domain.SyncItem, src, dst *domain.FileEntry, 
 }
 
 func (s *SyncService) Execute(ctx context.Context, plan *domain.SyncPlan, opts ports.SyncOptions) error {
-	if opts.DryRun {
+	if opts.DryRun || plan == nil || len(plan.Items) == 0 {
 		return nil
 	}
-	return nil
+	concurrency := opts.MaxConcurrency
+	if concurrency <= 0 {
+		concurrency = 100
+	}
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	var execErr error
+	for _, item := range plan.Items {
+		if item.Action == domain.SyncActionSkip {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case sem <- struct{}{}:
+		}
+		wg.Add(1)
+		go func(it domain.SyncItem) {
+			defer func() {
+				<-sem
+				wg.Done()
+			}()
+		}(item)
+	}
+	wg.Wait()
+	return execErr
 }
 
 func (s *SyncService) Cancel(ctx context.Context, jobID string) error {

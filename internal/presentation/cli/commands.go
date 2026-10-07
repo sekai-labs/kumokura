@@ -3,8 +3,9 @@ package cli
 import (
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -14,6 +15,7 @@ import (
 	"github.com/sekai-labs/kumokura/internal/bootstrap"
 	bucketDomain "github.com/sekai-labs/kumokura/internal/buckets/domain"
 	objectDomain "github.com/sekai-labs/kumokura/internal/objects/domain"
+	"github.com/sekai-labs/kumokura/internal/platform/config"
 	"github.com/sekai-labs/kumokura/internal/presentation/tui"
 	syncDomain "github.com/sekai-labs/kumokura/internal/synchronization/domain"
 	syncPorts "github.com/sekai-labs/kumokura/internal/synchronization/ports"
@@ -121,6 +123,15 @@ func newAccountCmd(app *bootstrap.AppContainer, opts *RootOptions, out, err io.W
 		Short: "Add a new storage account",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			f := NewFormatter(out, err, opts.JSONOutput)
+			if accessKey == "" {
+				accessKey = os.Getenv("KUMOKURA_ACCESS_KEY")
+			}
+			if secretKey == "" {
+				secretKey = os.Getenv("KUMOKURA_SECRET_KEY")
+			}
+			if sessionToken == "" {
+				sessionToken = os.Getenv("KUMOKURA_SESSION_TOKEN")
+			}
 			creds, err := accountDomain.NewCredentials(accessKey, secretKey, sessionToken)
 			if err != nil {
 				f.PrintError("invalid credentials: %v", err)
@@ -152,12 +163,10 @@ func newAccountCmd(app *bootstrap.AppContainer, opts *RootOptions, out, err io.W
 	addCmd.Flags().StringVar(&endpoint, "endpoint", "", "Custom S3 endpoint")
 	addCmd.Flags().StringVar(&region, "region", "us-east-1", "Region")
 	addCmd.Flags().BoolVar(&pathStyle, "path-style", false, "Use path-style addressing")
-	addCmd.Flags().StringVar(&accessKey, "access-key", "", "Access Key ID (required)")
-	addCmd.Flags().StringVar(&secretKey, "secret-key", "", "Secret Access Key (required)")
+	addCmd.Flags().StringVar(&accessKey, "access-key", "", "Access Key ID (optional if KUMOKURA_ACCESS_KEY set)")
+	addCmd.Flags().StringVar(&secretKey, "secret-key", "", "Secret Access Key (optional if KUMOKURA_SECRET_KEY set)")
 	addCmd.Flags().StringVar(&sessionToken, "session-token", "", "Optional session token")
 	_ = addCmd.MarkFlagRequired("name")
-	_ = addCmd.MarkFlagRequired("access-key")
-	_ = addCmd.MarkFlagRequired("secret-key")
 
 	removeCmd := &cobra.Command{
 		Use:   "remove <account-id>",
@@ -456,6 +465,7 @@ func newObjectCmd(app *bootstrap.AppContainer, opts *RootOptions, out, err io.Wr
 		Args:  cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			f := NewFormatter(out, err, opts.JSONOutput)
+			cleanDest := filepath.Clean(args[2])
 			objSvc, oErr := app.CreateObjectService(cmd.Context(), opts.Account)
 			if oErr != nil {
 				f.PrintError("initialize object service: %v", oErr)
@@ -468,10 +478,22 @@ func newObjectCmd(app *bootstrap.AppContainer, opts *RootOptions, out, err io.Wr
 			}
 			defer content.Body.Close()
 
-			if opts.JSONOutput {
-				return f.PrintJSON(map[string]string{"status": "downloaded", "key": args[1], "dest": args[2]})
+			outFile, err := os.OpenFile(cleanDest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+			if err != nil {
+				f.PrintError("create destination file failed: %v", err)
+				return err
 			}
-			f.PrintMessage("Object %s downloaded to %s.", args[1], args[2])
+			defer outFile.Close()
+
+			if _, err := io.Copy(outFile, content.Body); err != nil {
+				f.PrintError("write destination file failed: %v", err)
+				return err
+			}
+
+			if opts.JSONOutput {
+				return f.PrintJSON(map[string]string{"status": "downloaded", "key": args[1], "dest": cleanDest})
+			}
+			f.PrintMessage("Object %s downloaded to %s.", args[1], cleanDest)
 			return nil
 		},
 	}
@@ -482,12 +504,23 @@ func newObjectCmd(app *bootstrap.AppContainer, opts *RootOptions, out, err io.Wr
 		Args:  cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			f := NewFormatter(out, err, opts.JSONOutput)
+			file, err := os.Open(args[2])
+			if err != nil {
+				f.PrintError("open source file failed: %v", err)
+				return err
+			}
+			defer file.Close()
+			stat, err := file.Stat()
+			if err != nil {
+				f.PrintError("stat source file failed: %v", err)
+				return err
+			}
 			objSvc, oErr := app.CreateObjectService(cmd.Context(), opts.Account)
 			if oErr != nil {
 				f.PrintError("initialize object service: %v", oErr)
 				return oErr
 			}
-			_, err := objSvc.PutObject(cmd.Context(), args[0], args[1], strings.NewReader(""), 0, objectDomain.ObjectMetadata{})
+			_, err = objSvc.PutObject(cmd.Context(), args[0], args[1], file, stat.Size(), objectDomain.ObjectMetadata{})
 			if err != nil {
 				f.PrintError("put object failed: %v", err)
 				return err
@@ -588,7 +621,7 @@ func newObjectCmd(app *bootstrap.AppContainer, opts *RootOptions, out, err io.Wr
 			if opts.JSONOutput {
 				return f.PrintJSON(map[string]string{"url": pURL.URL})
 			}
-			f.PrintMessage(pURL.URL)
+			f.PrintMessage("%s", pURL.URL)
 			return nil
 		},
 	}
@@ -750,14 +783,14 @@ func newTransferCmd(app *bootstrap.AppContainer, opts *RootOptions, out, err io.
 
 func newSyncCmd(app *bootstrap.AppContainer, opts *RootOptions, out, err io.Writer) *cobra.Command {
 	var (
-		dryRun   bool
-		deleteEx bool
-		strategy string
-		conflict string
-		includes []string
-		excludes []string
+		dryRun      bool
+		deleteEx    bool
+		strategy    string
+		conflict    string
+		concurrency int
+		includes    []string
+		excludes    []string
 	)
-
 	cmd := &cobra.Command{
 		Use:   "sync <source> <target>",
 		Short: "Synchronize directories and S3 buckets",
@@ -770,6 +803,16 @@ func newSyncCmd(app *bootstrap.AppContainer, opts *RootOptions, out, err io.Writ
 				return sErr
 			}
 
+			if concurrency <= 0 {
+				concurrency = app.Config.MaxUploadConcurrency
+				if concurrency <= 0 {
+					concurrency = 100
+				}
+			}
+			if fc, _ := config.LoadFolderConfig(args[0]); fc != nil && fc.MaxConcurrency > 0 {
+				concurrency = fc.MaxConcurrency
+			}
+
 			syncOpts := syncPorts.SyncOptions{
 				Direction:        syncDomain.DirectionLocalToS3,
 				Mode:             syncDomain.ModeUploadOnly,
@@ -777,6 +820,7 @@ func newSyncCmd(app *bootstrap.AppContainer, opts *RootOptions, out, err io.Writ
 				ConflictPolicy:   syncDomain.ConflictPolicy(conflict),
 				DeleteExtraneous: deleteEx,
 				DryRun:           dryRun,
+				MaxConcurrency:   concurrency,
 				Filter: syncDomain.Filter{
 					Includes: includes,
 					Excludes: excludes,
@@ -820,8 +864,8 @@ func newSyncCmd(app *bootstrap.AppContainer, opts *RootOptions, out, err io.Writ
 	}
 
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Preview sync operations without executing")
+	cmd.Flags().IntVar(&concurrency, "concurrency", 100, "Maximum concurrent upload/sync workers")
 	cmd.Flags().BoolVar(&deleteEx, "delete", false, "Delete extraneous files in destination")
-	cmd.Flags().StringVar(&strategy, "strategy", "modtime-and-size", "Comparison strategy (size-only, modtime-and-size, checksum)")
 	cmd.Flags().StringVar(&conflict, "conflict", "KeepNewer", "Conflict resolution policy (Overwrite, Skip, KeepNewer, Fail)")
 	cmd.Flags().StringSliceVar(&includes, "include", nil, "Glob patterns to include")
 	cmd.Flags().StringSliceVar(&excludes, "exclude", nil, "Glob patterns to exclude")
@@ -879,7 +923,7 @@ func newConfigCmd(app *bootstrap.AppContainer, opts *RootOptions, out, err io.Wr
 			if opts.JSONOutput {
 				return f.PrintJSON(map[string]string{args[0]: val})
 			}
-			f.PrintMessage(val)
+			f.PrintMessage("%s", val)
 			return nil
 		},
 	}

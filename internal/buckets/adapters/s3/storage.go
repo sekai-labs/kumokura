@@ -2,7 +2,6 @@ package s3
 
 import (
 	"context"
-	"io"
 	"strings"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
@@ -376,14 +375,4 @@ func (s *S3BucketStorage) SetBucketCORS(ctx context.Context, bucket string, rule
 		},
 	})
 	return err
-}
-
-type noopReadCloser struct{}
-
-func (noopReadCloser) Read(p []byte) (n int, err error) {
-	return 0, io.EOF
-}
-
-func (noopReadCloser) Close() error {
-	return nil
 }

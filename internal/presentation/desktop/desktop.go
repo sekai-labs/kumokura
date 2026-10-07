@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
-
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
@@ -22,6 +22,7 @@ import (
 	"github.com/sekai-labs/kumokura/internal/bootstrap"
 	bucketDomain "github.com/sekai-labs/kumokura/internal/buckets/domain"
 	objectDomain "github.com/sekai-labs/kumokura/internal/objects/domain"
+	"github.com/sekai-labs/kumokura/internal/platform/config"
 	transferDomain "github.com/sekai-labs/kumokura/internal/transfers/domain"
 )
 
@@ -127,10 +128,13 @@ func (d *DesktopApp) buildHeader() fyne.CanvasObject {
 		d.onSearchChanged(query)
 	}
 
+	settingsBtn := widget.NewButtonWithIcon("Settings", theme.SettingsIcon(), func() {
+		d.showSettingsDialog()
+	})
+
 	refreshBtn := widget.NewButtonWithIcon("Refresh", theme.ViewRefreshIcon(), func() {
 		d.refreshAll()
 	})
-
 	leftHeader := container.NewHBox(
 		widget.NewLabelWithStyle("Account:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		d.accountSelect,
@@ -144,7 +148,7 @@ func (d *DesktopApp) buildHeader() fyne.CanvasObject {
 		nil,
 		nil,
 		nil,
-		refreshBtn,
+		container.NewHBox(settingsBtn, refreshBtn),
 		d.searchEntry,
 	)
 
@@ -250,8 +254,11 @@ func (d *DesktopApp) buildLeftPanel() fyne.CanvasObject {
 }
 
 func (d *DesktopApp) buildCenterPanel() fyne.CanvasObject {
-	uploadBtn := widget.NewButtonWithIcon("Upload", theme.UploadIcon(), func() {
+	uploadFileBtn := widget.NewButtonWithIcon("Upload File", theme.UploadIcon(), func() {
 		d.showUploadDialog()
+	})
+	uploadFolderBtn := widget.NewButtonWithIcon("Upload Folder", theme.FolderNewIcon(), func() {
+		d.showUploadFolderDialog()
 	})
 	downloadBtn := widget.NewButtonWithIcon("Download", theme.DownloadIcon(), func() {
 		d.downloadSelectedObject()
@@ -259,9 +266,9 @@ func (d *DesktopApp) buildCenterPanel() fyne.CanvasObject {
 	deleteBtn := widget.NewButtonWithIcon("Delete", theme.DeleteIcon(), func() {
 		d.deleteSelectedObject()
 	})
-
 	actionsBar := container.NewHBox(
-		uploadBtn,
+		uploadFileBtn,
+		uploadFolderBtn,
 		downloadBtn,
 		deleteBtn,
 	)
@@ -739,6 +746,117 @@ func (d *DesktopApp) showUploadDialog() {
 			dialog.ShowInformation("Upload Success", fmt.Sprintf("Uploaded %s successfully.", key), d.window)
 			d.loadObjects()
 		}()
+	}, d.window)
+}
+func (d *DesktopApp) showUploadFolderDialog() {
+	d.mu.RLock()
+	acc := d.selectedAccount
+	bucket := d.selectedBucket
+	d.mu.RUnlock()
+
+	if acc == nil || bucket == "" {
+		dialog.ShowInformation("Select Bucket", "Please select an account and bucket before uploading.", d.window)
+		return
+	}
+
+	dialog.ShowFolderOpen(func(uri fyne.ListableURI, err error) {
+		if err != nil {
+			dialog.ShowError(err, d.window)
+			return
+		}
+		if uri == nil {
+			return
+		}
+
+		folderPath := uri.Path()
+		go func() {
+			ctx := context.Background()
+			concurrency := d.container.Config.MaxUploadConcurrency
+			if concurrency <= 0 {
+				concurrency = 100
+			}
+			if fc, _ := config.LoadFolderConfig(folderPath); fc != nil && fc.MaxConcurrency > 0 {
+				concurrency = fc.MaxConcurrency
+			}
+
+			oService, err := d.container.CreateObjectService(ctx, acc.Name)
+			if err != nil {
+				dialog.ShowError(err, d.window)
+				return
+			}
+
+			var filesToUpload []string
+			_ = filepath.Walk(folderPath, func(p string, info os.FileInfo, walkErr error) error {
+				if walkErr == nil && !info.IsDir() {
+					filesToUpload = append(filesToUpload, p)
+				}
+				return nil
+			})
+
+			sem := make(chan struct{}, concurrency)
+			var wg sync.WaitGroup
+			var uploadCount int64
+
+			for _, filePath := range filesToUpload {
+				rel, err := filepath.Rel(folderPath, filePath)
+				if err != nil {
+					continue
+				}
+				key := filepath.ToSlash(rel)
+
+				sem <- struct{}{}
+				wg.Add(1)
+				go func(fPath, objKey string) {
+					defer func() {
+						<-sem
+						wg.Done()
+					}()
+
+					f, oErr := os.Open(fPath)
+					if oErr != nil {
+						return
+					}
+					defer f.Close()
+
+					st, sErr := f.Stat()
+					if sErr != nil {
+						return
+					}
+
+					_, pErr := oService.PutObject(ctx, bucket, objKey, f, st.Size(), objectDomain.ObjectMetadata{})
+					if pErr == nil {
+						atomic.AddInt64(&uploadCount, 1)
+					}
+				}(filePath, key)
+			}
+			wg.Wait()
+
+			dialog.ShowInformation("Folder Upload Complete", fmt.Sprintf("Uploaded %d files to %s.", uploadCount, bucket), d.window)
+			d.loadObjects()
+		}()
+	}, d.window)
+}
+
+func (d *DesktopApp) showSettingsDialog() {
+	concurrencyEntry := widget.NewEntry()
+	concurrencyEntry.SetText(fmt.Sprintf("%d", d.container.Config.MaxUploadConcurrency))
+
+	items := []*widget.FormItem{
+		widget.NewFormItem("Upload Concurrency (Goroutines)", concurrencyEntry),
+	}
+
+	dialog.ShowForm("Preferences", "Save", "Cancel", items, func(confirmed bool) {
+		if !confirmed {
+			return
+		}
+		var val int
+		if _, err := fmt.Sscanf(concurrencyEntry.Text, "%d", &val); err == nil && val > 0 {
+			d.container.Config.MaxUploadConcurrency = val
+			_ = d.container.Config.Save()
+			if d.container.TransferService != nil {
+				d.container.TransferService.SetMaxConcurrency(val)
+			}
+		}
 	}, d.window)
 }
 

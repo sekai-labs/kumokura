@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strings"
 
@@ -300,6 +301,11 @@ func (m Model) handleExplorerKeys(msg tea.KeyMsg, cmds []tea.Cmd) (Model, []tea.
 				m.showDeleteModal = true
 			}
 		}
+	case key.Matches(msg, m.keymap.Upload):
+		m.notification = "Upload triggered (use kumokura put or kumokura sync for batch folder upload)"
+		cmds = append(cmds, func() tea.Msg {
+			return messages.StatusNotificationMsg{Message: "Use 'kumokura put' or 'kumokura sync' for 100-worker high-speed upload"}
+		})
 	}
 
 	return m, cmds
@@ -349,7 +355,7 @@ func (m Model) View() string {
 	if m.showDeleteModal {
 		deleteModal := components.NewModalDialog(
 			"CONFIRM DELETION",
-			"Are you sure you want to permanently delete object:\n"+m.deleteTargetKey,
+			fmt.Sprintf("Are you sure you want to permanently delete object:\n%s", m.deleteTargetKey),
 			[]string{"Yes (Enter)", "Cancel (Esc)"},
 			m.styles,
 		)
@@ -479,7 +485,7 @@ func (m Model) deleteObjectCmd(bucket, key string) tea.Cmd {
 		if m.services.ObjectService != nil {
 			_ = m.services.ObjectService.DeleteObject(context.Background(), bucket, key, "")
 		}
-		return messages.StatusNotificationMsg{Message: "Deleted: " + key}
+		return messages.StatusNotificationMsg{Message: fmt.Sprintf("Deleted: %s", key)}
 	}
 }
 

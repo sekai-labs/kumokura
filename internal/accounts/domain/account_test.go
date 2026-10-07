@@ -55,4 +55,14 @@ func TestCredentialsValidation(t *testing.T) {
 	assert.Equal(t, "access-key", creds.AccessKeyID)
 	assert.Equal(t, "secret-key", creds.SecretAccessKey)
 	assert.Equal(t, "session-token", creds.SessionToken)
+
+	creds.Zero()
+	assert.Empty(t, creds.AccessKeyID)
+	assert.Empty(t, creds.SecretAccessKey)
+
+	err = domain.ValidateEndpoint("ftp://localhost:9000")
+	assert.ErrorIs(t, err, domain.ErrInvalidEndpoint)
+
+	err = domain.ValidateEndpoint("http://169.254.169.254/latest/meta-data")
+	assert.ErrorIs(t, err, domain.ErrInvalidEndpoint)
 }

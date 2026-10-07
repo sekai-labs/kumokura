@@ -15,4 +15,13 @@ func TestValidateObjectKey(t *testing.T) {
 
 	err = ValidateObjectKey("   ")
 	assert.ErrorIs(t, err, ErrEmptyObjectKey)
+
+	err = ValidateObjectKey("../etc/passwd")
+	assert.ErrorIs(t, err, ErrPathTraversal)
+
+	err = ValidateObjectKey("a/b/../../c")
+	assert.ErrorIs(t, err, ErrPathTraversal)
+
+	err = ValidateObjectKey("a/\x00/b")
+	assert.ErrorIs(t, err, ErrPathTraversal)
 }

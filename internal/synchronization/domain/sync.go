@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"fmt"
 	"path"
 	"regexp"
 	"strings"
@@ -134,7 +135,7 @@ func matchPattern(pattern, text string) bool {
 	}
 
 	if strings.Contains(p, "**") {
-		regexStr := "^" + regexp.QuoteMeta(p) + "$"
+		regexStr := fmt.Sprintf("^%s$", regexp.QuoteMeta(p))
 		regexStr = strings.ReplaceAll(regexStr, `\*\*`, `.*`)
 		regexStr = strings.ReplaceAll(regexStr, `\*`, `[^/]*`)
 		regexStr = strings.ReplaceAll(regexStr, `\?`, `.`)

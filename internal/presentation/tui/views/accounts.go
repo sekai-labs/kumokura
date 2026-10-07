@@ -37,9 +37,9 @@ func (v *AccountsView) Render(width, height int) string {
 
 		var rowStr string
 		if i == v.SelectedAccount {
-			rowStr = v.styles.SelectedRow.Width(width - 4).Render("> " + line)
+			rowStr = v.styles.SelectedRow.Width(width - 4).Render(fmt.Sprintf("> %s", line))
 		} else {
-			rowStr = v.styles.NormalRow.Width(width - 4).Render("  " + line)
+			rowStr = v.styles.NormalRow.Width(width - 4).Render(fmt.Sprintf("  %s", line))
 		}
 		rows = append(rows, rowStr)
 	}

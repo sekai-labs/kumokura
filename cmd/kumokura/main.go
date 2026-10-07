@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 
 	"github.com/sekai-labs/kumokura/internal/bootstrap"
@@ -12,7 +13,7 @@ func main() {
 	ctx := context.Background()
 	app, err := bootstrap.Initialize(ctx)
 	if err != nil {
-		os.Stderr.WriteString("Initialization error: " + err.Error() + "\n")
+		fmt.Fprintf(os.Stderr, "Initialization error: %v\n", err)
 		os.Exit(1)
 	}
 	defer app.Close()

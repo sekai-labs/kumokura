@@ -74,7 +74,11 @@ func InitializeWithConfig(ctx context.Context, cfg *config.Config) (*AppContaine
 	transferPub := transfersAdapters.NewInMemoryEventPublisher()
 	bufferPool := transfersAdapters.NewTieredBufferPool()
 	transferWorker := transfersAdapters.NewS3TransferWorker(nil, bufferPool)
-	transferSvc := transfersApp.NewTransferService(transferRepo, transferPub, transferWorker, bufferPool, 8)
+	concurrency := cfg.MaxUploadConcurrency
+	if concurrency <= 0 {
+		concurrency = 100
+	}
+	transferSvc := transfersApp.NewTransferService(transferRepo, transferPub, transferWorker, bufferPool, concurrency)
 
 	syncRepo := syncAdapters.NewSQLiteSyncRepository(db.DB)
 	syncSvc := syncApp.NewSyncService(syncRepo)
@@ -104,10 +108,6 @@ func (c *AppContainer) CreateBucketService(ctx context.Context, accountName stri
 		return nil, fmt.Errorf("list accounts: %w", err)
 	}
 
-	var targetAccount *accountsAdapters.SQLiteAccountRepository
-	_ = targetAccount
-	var foundAcc *accountsApp.AccountApplicationService
-	_ = foundAcc
 
 	for _, acc := range accounts {
 		if accountName == "" || acc.Name == accountName || string(acc.ID) == accountName {
@@ -148,6 +148,32 @@ func (c *AppContainer) CreateObjectService(ctx context.Context, accountName stri
 		}
 	}
 
+	return nil, fmt.Errorf("account %q not found", accountName)
+}
+func (c *AppContainer) CreateTransferService(ctx context.Context, accountName string) (*transfersApp.TransferService, error) {
+	accounts, err := c.AccountService.ListAccounts(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list accounts: %w", err)
+	}
+	for _, acc := range accounts {
+		if accountName == "" || acc.Name == accountName || string(acc.ID) == accountName {
+			creds, err := c.AccountService.GetCredentials(ctx, acc.ID)
+			if err != nil {
+				return nil, fmt.Errorf("retrieve credentials for account %s: %w", acc.Name, err)
+			}
+			s3Cli, err := c.ClientFactory.Build(ctx, acc, creds)
+			if err != nil {
+				return nil, fmt.Errorf("build s3 client: %w", err)
+			}
+			bufferPool := transfersAdapters.NewTieredBufferPool()
+			worker := transfersAdapters.NewS3TransferWorker(s3Cli, bufferPool)
+			concurrency := c.Config.MaxUploadConcurrency
+			if concurrency <= 0 {
+				concurrency = 100
+			}
+			return transfersApp.NewTransferService(c.TransferRepo, transfersAdapters.NewInMemoryEventPublisher(), worker, bufferPool, concurrency), nil
+		}
+	}
 	return nil, fmt.Errorf("account %q not found", accountName)
 }
 

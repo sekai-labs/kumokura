@@ -2,6 +2,7 @@ package domain
 
 import (
 	"errors"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -49,6 +50,12 @@ type Credentials struct {
 	SessionToken    string
 }
 
+func (c *Credentials) Zero() {
+	c.AccessKeyID = ""
+	c.SecretAccessKey = ""
+	c.SessionToken = ""
+}
+
 func NewCredentials(accessKeyID, secretAccessKey, sessionToken string) (Credentials, error) {
 	ak := strings.TrimSpace(accessKeyID)
 	sk := strings.TrimSpace(secretAccessKey)
@@ -89,6 +96,11 @@ func NewAccount(id AccountID, name string, accType AccountType, endpoint, region
 	if (accType == TypeMinIO || accType == TypeCeph || accType == TypeCustomS3) && trimmedEndpoint == "" {
 		return nil, ErrInvalidEndpoint
 	}
+	if trimmedEndpoint != "" {
+		if err := ValidateEndpoint(trimmedEndpoint); err != nil {
+			return nil, err
+		}
+	}
 
 	trimmedRegion := strings.TrimSpace(region)
 	if trimmedRegion == "" {
@@ -106,4 +118,16 @@ func NewAccount(id AccountID, name string, accType AccountType, endpoint, region
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}, nil
+}
+
+func ValidateEndpoint(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return ErrInvalidEndpoint
+	}
+	hostname := u.Hostname()
+	if hostname == "169.254.169.254" || hostname == "metadata.google.internal" {
+		return ErrInvalidEndpoint
+	}
+	return nil
 }
