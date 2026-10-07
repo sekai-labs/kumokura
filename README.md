@@ -23,6 +23,17 @@
 
 ## Installation & Quickstart
 
+### Prerequisites (Linux GUI)
+
+Building the desktop GUI (`kumokura-desktop`) on Linux requires OpenGL/X11 and Wayland development headers:
+
+```bash
+# Debian / Ubuntu
+sudo apt-get update
+sudo apt-get install -y libgl1-mesa-dev xorg-dev libxcursor-dev libxrandr-dev libxinerama-dev libxi-dev libxxf86vm-dev libwayland-dev libxkbcommon-dev
+```
+*(Note: `libwayland-dev` and `libxkbcommon-dev` are required for Wayland builds using `-tags wayland`.)*
+
 ### Building from Source
 
 ```bash
