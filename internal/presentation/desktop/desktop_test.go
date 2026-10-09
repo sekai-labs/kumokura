@@ -47,6 +47,14 @@ func TestDesktopAppInitialization(t *testing.T) {
 	assert.NotNil(t, app.objectTable)
 	assert.NotNil(t, app.detailsCard)
 	assert.NotNil(t, app.transferList)
+	assert.NotNil(t, app.emptyStateCard)
+	assert.NotNil(t, app.loadingContainer)
+	assert.NotNil(t, app.loadingBar)
+	assert.NotNil(t, app.loadingLabel)
+	assert.NotNil(t, app.centerContainer)
+	assert.NotNil(t, app.previewBtn)
+	assert.NotNil(t, app.previewContentEntry)
+	assert.NotNil(t, app.previewStatusLabel)
 }
 
 func TestDesktopAppAccountAndFilter(t *testing.T) {
@@ -109,4 +117,81 @@ func TestDesktopAppAccountAndFilter(t *testing.T) {
 	app.mu.RLock()
 	assert.Len(t, app.filteredObjects, 3)
 	app.mu.RUnlock()
+}
+
+func TestDesktopAppLoadingAndEmptyState(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config.Config{
+		ConfigDir:  tempDir,
+		DataDir:    tempDir,
+		SecretsDir: tempDir,
+		DBPath:     ":memory:",
+		LogLevel:   "error",
+	}
+	appContainer, err := bootstrap.InitializeWithConfig(context.Background(), cfg)
+	require.NoError(t, err)
+	defer appContainer.Close()
+
+	fyneTestApp := test.NewApp()
+	app := NewDesktopAppWithFyneApp(appContainer, fyneTestApp)
+	require.NotNil(t, app)
+
+	// Test loading state
+	app.updateTableViewState(true, 0)
+	assert.True(t, app.loadingContainer.Visible())
+	assert.False(t, app.objectTable.Visible())
+	assert.False(t, app.emptyStateCard.Visible())
+
+	// Test empty state
+	app.updateTableViewState(false, 0)
+	assert.False(t, app.loadingContainer.Visible())
+	assert.False(t, app.objectTable.Visible())
+	assert.True(t, app.emptyStateCard.Visible())
+
+	// Test populated state
+	app.updateTableViewState(false, 5)
+	assert.False(t, app.loadingContainer.Visible())
+	assert.True(t, app.objectTable.Visible())
+	assert.False(t, app.emptyStateCard.Visible())
+}
+
+func TestDesktopAppSelectObjectAndPreview(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config.Config{
+		ConfigDir:  tempDir,
+		DataDir:    tempDir,
+		SecretsDir: tempDir,
+		DBPath:     ":memory:",
+		LogLevel:   "error",
+	}
+	appContainer, err := bootstrap.InitializeWithConfig(context.Background(), cfg)
+	require.NoError(t, err)
+	defer appContainer.Close()
+
+	fyneTestApp := test.NewApp()
+	app := NewDesktopAppWithFyneApp(appContainer, fyneTestApp)
+	require.NotNil(t, app)
+
+	// Nil selection resets metadata and preview labels
+	app.selectObject(nil)
+	assert.Equal(t, "Select an object to inspect details.", app.metadataLabel.Text)
+	assert.Equal(t, "", app.previewContentEntry.Text)
+
+	// Select an object
+	sampleObj := &objectDomain.Object{
+		Key:          "docs/hello.txt",
+		Size:         128,
+		StorageClass: objectDomain.StorageClassStandard,
+		LastModified: time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC),
+		ETag:         "\"abc123etag\"",
+	}
+	app.selectObject(sampleObj)
+	app.mu.RLock()
+	assert.Equal(t, "docs/hello.txt", app.selectedObject.Key)
+	app.mu.RUnlock()
+
+	assert.Contains(t, app.metadataLabel.Text, "docs/hello.txt")
+	assert.Contains(t, app.metadataLabel.Text, "128 B")
+	assert.Contains(t, app.metadataLabel.Text, "abc123etag")
+	assert.Contains(t, app.previewStatusLabel.Text, "Ready to preview hello.txt")
 }

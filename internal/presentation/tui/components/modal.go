@@ -3,6 +3,7 @@ package components
 import (
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/sekai-labs/kumokura/internal/presentation/tui/styles"
 )
@@ -58,6 +59,60 @@ func (m *ModalDialog) Render(totalWidth, totalHeight int) string {
 	if padY < 0 {
 		padY = 0
 	}
+
+	return lipgloss.Place(totalWidth, totalHeight, lipgloss.Center, lipgloss.Center, box)
+}
+
+type UploadModal struct {
+	Input       textinput.Model
+	TargetKey   string
+	Active      bool
+	Destination string
+	ErrorText   string
+	styles      styles.Styles
+}
+
+func NewUploadModal(s styles.Styles) UploadModal {
+	ti := textinput.New()
+	ti.Placeholder = "/path/to/local/file.txt"
+	ti.CharLimit = 512
+	ti.Width = 44
+
+	return UploadModal{
+		Input:  ti,
+		styles: s,
+	}
+}
+
+func (u *UploadModal) Render(totalWidth, totalHeight int) string {
+	dialogWidth := 58
+	if totalWidth-6 < dialogWidth {
+		dialogWidth = totalWidth - 6
+	}
+	if dialogWidth < 30 {
+		dialogWidth = 30
+	}
+
+	titleRendered := u.styles.ModalHeader.Render("UPLOAD OBJECT")
+	destLabel := u.styles.StatusKey.Render("Target Destination: ") + u.styles.StatusDesc.Render(u.Destination)
+	promptLabel := u.styles.NormalRow.Render("Local file path:")
+	inputBox := u.Input.View()
+
+	var errLine string
+	if u.ErrorText != "" {
+		errLine = u.styles.DangerPill.Render(u.ErrorText)
+	}
+
+	hint := u.styles.StatusDesc.Render("[Enter] Upload   [Esc] Cancel")
+
+	items := []string{titleRendered, destLabel, "", promptLabel, inputBox}
+	if errLine != "" {
+		items = append(items, "", errLine)
+	}
+	items = append(items, "", hint)
+
+	content := lipgloss.JoinVertical(lipgloss.Left, items...)
+	box := u.styles.ModalBox.Width(dialogWidth).Render(content)
 
 	return lipgloss.Place(totalWidth, totalHeight, lipgloss.Center, lipgloss.Center, box)
 }

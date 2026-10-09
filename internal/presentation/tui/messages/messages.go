@@ -53,3 +53,9 @@ type ErrorMsg struct {
 type StatusNotificationMsg struct {
 	Message string
 }
+
+type UploadFinishedMsg struct {
+	Bucket string
+	Key    string
+	Err    error
+}

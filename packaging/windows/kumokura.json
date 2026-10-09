@@ -1,0 +1,31 @@
+{
+    "version": "0.1.0",
+    "description": "High-performance, cross-cloud S3 storage manager in Go with CLI, TUI, and Desktop GUI",
+    "homepage": "https://github.com/sekai-labs/kumokura",
+    "license": "MIT",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/sekai-labs/kumokura/releases/download/v0.1.0/kumokura_v0.1.0_windows_amd64.zip",
+            "hash": "SKIP"
+        }
+    },
+    "bin": [
+        "kumokura.exe",
+        "kumokura-tui.exe",
+        "kumokura-desktop.exe"
+    ],
+    "shortcuts": [
+        [
+            "kumokura-desktop.exe",
+            "Kumokura"
+        ]
+    ],
+    "checkver": "github",
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/sekai-labs/kumokura/releases/download/v$version/kumokura_v$version_windows_amd64.zip"
+            }
+        }
+    }
+}

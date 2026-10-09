@@ -7,8 +7,7 @@ build/
 vendor/
 node_modules/
 
-# Documentation and Specifications (Maintained separately on GitHub Wiki)
-docs/
+# Specifications (Maintained separately on GitHub Wiki)
 specs/
 wiki/
 
@@ -19,3 +18,6 @@ Thumbs.db
 .vscode/
 *.swp
 *~
+
+# Local metadata
+.ansible/

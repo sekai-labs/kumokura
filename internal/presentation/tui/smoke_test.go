@@ -24,6 +24,8 @@ func TestTUI_SmokeRenderView(t *testing.T) {
 	assert.True(t, strings.Contains(rendered, "[j/k] Navigate"))
 	assert.True(t, strings.Contains(rendered, "[Enter] Open"))
 	assert.True(t, strings.Contains(rendered, "[Tab] Switch Pane"))
+	assert.True(t, strings.Contains(rendered, "[u] Upload"))
+	assert.True(t, strings.Contains(rendered, "[p] Preview"))
 	assert.True(t, strings.Contains(rendered, "[?] Help"))
 	assert.True(t, strings.Contains(rendered, "[q] Quit"))
 }

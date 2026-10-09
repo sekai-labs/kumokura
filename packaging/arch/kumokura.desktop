@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Kumokura
+GenericName=S3 Storage Manager
+Comment=High-performance cross-cloud S3 storage manager (CLI, TUI, GUI)
+Exec=kumokura-desktop
+Icon=kumokura
+Terminal=false
+Type=Application
+Categories=Network;FileTransfer;Utility;
+Keywords=s3;storage;cloud;aws;minio;r2;backup;sync;
+StartupNotify=true

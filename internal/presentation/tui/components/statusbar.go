@@ -20,7 +20,12 @@ func (b *StatusBar) Render(width int, activeHelp []string, throughput float64, p
 	var leftParts []string
 
 	if notification != "" {
-		leftParts = append(leftParts, b.styles.WarningPill.Render(notification))
+		notifText := notification
+		maxNotifLen := width * 40 / 100
+		if maxNotifLen > 10 && lipgloss.Width(notifText) > maxNotifLen {
+			notifText = notifText[:maxNotifLen-1] + "…"
+		}
+		leftParts = append(leftParts, b.styles.WarningPill.Render(notifText))
 	} else if throughput > 0 {
 		speedStr := fmt.Sprintf("%.2f MiB/s (%.0f%%)", throughput/(1024*1024), progressPercent)
 		leftParts = append(leftParts, b.styles.SuccessPill.Render(speedStr))
@@ -29,15 +34,27 @@ func (b *StatusBar) Render(width int, activeHelp []string, throughput float64, p
 	}
 
 	left := strings.Join(leftParts, " ")
+	leftWidth := lipgloss.Width(left)
+
+	// Dynamically fit activeHelp keys into remaining width
+	availForHelp := width - leftWidth - 6
+	if availForHelp < 0 {
+		availForHelp = 0
+	}
 
 	var rightParts []string
+	curHelpLen := 0
 	for _, h := range activeHelp {
+		hLen := lipgloss.Width(h) + 2 // including separator
+		if curHelpLen+hLen > availForHelp {
+			break
+		}
 		rightParts = append(rightParts, b.styles.StatusKey.Render(h))
+		curHelpLen += hLen
 	}
-	right := strings.Join(rightParts, "  ")
-
-	leftWidth := lipgloss.Width(left)
+	right := strings.Join(rightParts, " ")
 	rightWidth := lipgloss.Width(right)
+
 	spacerWidth := width - leftWidth - rightWidth - 2
 	if spacerWidth < 1 {
 		spacerWidth = 1

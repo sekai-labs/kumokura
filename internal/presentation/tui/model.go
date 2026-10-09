@@ -4,14 +4,16 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	accPorts "github.com/sekai-labs/kumokura/internal/accounts/ports"
 	accDomain "github.com/sekai-labs/kumokura/internal/accounts/domain"
+	accPorts "github.com/sekai-labs/kumokura/internal/accounts/ports"
 	bucketApp "github.com/sekai-labs/kumokura/internal/buckets/application"
 	bucketDomain "github.com/sekai-labs/kumokura/internal/buckets/domain"
 	objApp "github.com/sekai-labs/kumokura/internal/objects/application"
@@ -55,9 +57,11 @@ type Model struct {
 	activeAccount string
 	activeBucket  string
 
-	showHelpModal   bool
-	showDeleteModal bool
-	deleteTargetKey string
+	showHelpModal    bool
+	showDeleteModal  bool
+	deleteTargetKey  string
+	uploadModal      components.UploadModal
+	showPreviewModal bool
 
 	notification string
 }
@@ -81,6 +85,7 @@ func NewModel(services Services) Model {
 		tabBar:        components.NewTabBar(tabs, st),
 		statusBar:     components.NewStatusBar(st),
 		searchBar:     components.NewSearchBar(st),
+		uploadModal:   components.NewUploadModal(st),
 		activeTab:     0,
 		explorerView:  views.NewExplorerView(st),
 		transfersView: views.NewTransfersView(st),
@@ -138,7 +143,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case messages.ContentPreviewLoadedMsg:
 		if msg.Err == nil {
-			m.explorerView.PreviewContent = msg.Content
+			m.explorerView.PreviewContent = []byte(msg.Content)
+		}
+
+	case messages.UploadFinishedMsg:
+		if msg.Err != nil {
+			m.notification = fmt.Sprintf("Upload failed: %v", msg.Err)
+		} else {
+			m.notification = fmt.Sprintf("Successfully uploaded %s", msg.Key)
+			cmds = append(cmds, m.loadObjectsCmd(m.activeBucket, m.explorerView.CurrentPrefix))
 		}
 
 	case messages.TransfersLoadedMsg:
@@ -148,7 +161,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case messages.StatusNotificationMsg:
 		m.notification = msg.Message
-
 	case tea.KeyMsg:
 		if m.showHelpModal {
 			if key.Matches(msg, m.keymap.Escape, m.keymap.Help, m.keymap.Quit) {
@@ -166,6 +178,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.showDeleteModal = false
 			}
 			return m, nil
+		}
+
+		if m.uploadModal.Active {
+			switch {
+			case key.Matches(msg, m.keymap.Escape):
+				m.uploadModal.Active = false
+				m.uploadModal.Input.Blur()
+			case key.Matches(msg, m.keymap.Enter):
+				path := strings.TrimSpace(m.uploadModal.Input.Value())
+				if path == "" {
+					m.uploadModal.ErrorText = "Please specify a valid file path"
+				} else {
+					fi, err := os.Stat(path)
+					if err != nil {
+						m.uploadModal.ErrorText = fmt.Sprintf("File not found: %s", filepath.Base(path))
+					} else if fi.IsDir() {
+						m.uploadModal.ErrorText = "Directories not supported. Please select a file"
+					} else {
+						// Valid file!
+						m.uploadModal.Active = false
+						m.uploadModal.Input.Blur()
+						targetKey := m.uploadModal.TargetKey
+						if targetKey == "" {
+							targetKey = filepath.Base(path)
+						}
+						m.notification = fmt.Sprintf("Uploading %s...", filepath.Base(path))
+						cmds = append(cmds, m.uploadObjectCmd(m.activeBucket, targetKey, path))
+					}
+				}
+			default:
+				var tiCmd tea.Cmd
+				m.uploadModal.Input, tiCmd = m.uploadModal.Input.Update(msg)
+				cmds = append(cmds, tiCmd)
+			}
+			return m, tea.Batch(cmds...)
 		}
 
 		if m.searchBar.Active {
@@ -264,6 +311,40 @@ func (m Model) handleExplorerKeys(msg tea.KeyMsg, cmds []tea.Cmd) (Model, []tea.
 			}
 		}
 
+	case key.Matches(msg, m.keymap.PageUp):
+		if m.explorerView.ActivePaneIndex == 0 {
+			m.explorerView.SelectedBucket = max(0, m.explorerView.SelectedBucket-10)
+		} else if m.explorerView.ActivePaneIndex == 1 {
+			m.explorerView.SelectedObject = max(0, m.explorerView.SelectedObject-10)
+			cmds = append(cmds, m.inspectCurrentObjectCmd())
+		}
+
+	case key.Matches(msg, m.keymap.PageDown):
+		if m.explorerView.ActivePaneIndex == 0 {
+			m.explorerView.SelectedBucket = min(max(0, len(m.explorerView.Buckets)-1), m.explorerView.SelectedBucket+10)
+		} else if m.explorerView.ActivePaneIndex == 1 {
+			total := len(m.explorerView.Prefixes) + len(m.explorerView.Objects)
+			m.explorerView.SelectedObject = min(max(0, total-1), m.explorerView.SelectedObject+10)
+			cmds = append(cmds, m.inspectCurrentObjectCmd())
+		}
+
+	case key.Matches(msg, m.keymap.Top):
+		if m.explorerView.ActivePaneIndex == 0 {
+			m.explorerView.SelectedBucket = 0
+		} else if m.explorerView.ActivePaneIndex == 1 {
+			m.explorerView.SelectedObject = 0
+			cmds = append(cmds, m.inspectCurrentObjectCmd())
+		}
+
+	case key.Matches(msg, m.keymap.Bottom):
+		if m.explorerView.ActivePaneIndex == 0 {
+			m.explorerView.SelectedBucket = max(0, len(m.explorerView.Buckets)-1)
+		} else if m.explorerView.ActivePaneIndex == 1 {
+			total := len(m.explorerView.Prefixes) + len(m.explorerView.Objects)
+			m.explorerView.SelectedObject = max(0, total-1)
+			cmds = append(cmds, m.inspectCurrentObjectCmd())
+		}
+
 	case key.Matches(msg, m.keymap.Enter):
 		if m.explorerView.ActivePaneIndex == 0 {
 			if len(m.explorerView.Buckets) > m.explorerView.SelectedBucket {
@@ -301,11 +382,17 @@ func (m Model) handleExplorerKeys(msg tea.KeyMsg, cmds []tea.Cmd) (Model, []tea.
 				m.showDeleteModal = true
 			}
 		}
+
 	case key.Matches(msg, m.keymap.Upload):
-		m.notification = "Upload triggered (use kumokura put or kumokura sync for batch folder upload)"
-		cmds = append(cmds, func() tea.Msg {
-			return messages.StatusNotificationMsg{Message: "Use 'kumokura put' or 'kumokura sync' for 100-worker high-speed upload"}
-		})
+		if m.activeBucket == "" {
+			m.notification = "Select a bucket before uploading"
+		} else {
+			m.uploadModal.Active = true
+			m.uploadModal.Destination = fmt.Sprintf("s3://%s/%s", m.activeBucket, m.explorerView.CurrentPrefix)
+			m.uploadModal.ErrorText = ""
+			m.uploadModal.Input.SetValue("")
+			m.uploadModal.Input.Focus()
+		}
 	}
 
 	return m, cmds
@@ -336,7 +423,7 @@ func (m Model) View() string {
 		filterBar = m.searchBar.Render(m.width)
 	}
 
-	helpKeys := []string{"[j/k] Navigate", "[Enter] Open", "[Tab] Switch Pane", "[/] Filter", "[p] Preview", "[?] Help", "[q] Quit"}
+	helpKeys := []string{"[j/k] Navigate", "[Enter] Open", "[Tab] Switch Pane", "[/] Filter", "[u] Upload", "[p] Preview", "[?] Help", "[q] Quit"}
 	bottomBar := m.statusBar.Render(m.width, helpKeys, 0, 0, m.notification)
 
 	parts := []string{topBar}
@@ -346,6 +433,10 @@ func (m Model) View() string {
 	parts = append(parts, body, bottomBar)
 
 	mainView := lipgloss.JoinVertical(lipgloss.Left, parts...)
+
+	if m.uploadModal.Active {
+		return m.uploadModal.Render(m.width, m.height)
+	}
 
 	if m.showHelpModal {
 		helpModal := components.NewModalDialog("HELP OVERLAY", m.helpView.Render(m.width-10, m.height-10), []string{"Close (Esc)"}, m.styles)
@@ -452,11 +543,61 @@ func (m Model) loadObjectContentCmd(bucket, key string) tea.Cmd {
 		}
 		defer obj.Body.Close()
 
-		buf := make([]byte, 1024)
+		// Read up to 4KB for preview
+		buf := make([]byte, 4096)
 		n, _ := io.ReadFull(obj.Body, buf)
 		return messages.ContentPreviewLoadedMsg{
 			Key:     key,
 			Content: string(buf[:n]),
+		}
+	}
+}
+
+func (m Model) uploadObjectCmd(bucket, key, localPath string) tea.Cmd {
+	return func() tea.Msg {
+		if m.services.ObjectService == nil {
+			return messages.UploadFinishedMsg{
+				Bucket: bucket,
+				Key:    key,
+				Err:    fmt.Errorf("object service unavailable"),
+			}
+		}
+
+		f, err := os.Open(localPath)
+		if err != nil {
+			return messages.UploadFinishedMsg{
+				Bucket: bucket,
+				Key:    key,
+				Err:    err,
+			}
+		}
+		defer f.Close()
+
+		stat, err := f.Stat()
+		if err != nil {
+			return messages.UploadFinishedMsg{
+				Bucket: bucket,
+				Key:    key,
+				Err:    err,
+			}
+		}
+
+		// Construct full object key if prefix is set and not already part of key
+		fullKey := key
+		if m.explorerView.CurrentPrefix != "" && !strings.HasPrefix(fullKey, m.explorerView.CurrentPrefix) {
+			fullKey = filepath.ToSlash(filepath.Join(m.explorerView.CurrentPrefix, key))
+		}
+
+		meta := objDomain.ObjectMetadata{
+			ContentType:   "application/octet-stream",
+			ContentLength: stat.Size(),
+		}
+
+		_, err = m.services.ObjectService.PutObject(context.Background(), bucket, fullKey, f, stat.Size(), meta)
+		return messages.UploadFinishedMsg{
+			Bucket: bucket,
+			Key:    fullKey,
+			Err:    err,
 		}
 	}
 }

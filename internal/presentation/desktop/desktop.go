@@ -54,12 +54,24 @@ type DesktopApp struct {
 	accountList *widget.List
 	bucketList  *widget.List
 
-	objectTable *widget.Table
+	objectTable       *widget.Table
+	emptyStateCard    *widget.Card
+	loadingContainer  *fyne.Container
+	loadingBar        *widget.ProgressBarInfinite
+	loadingLabel      *widget.Label
+	centerContainer   *fyne.Container
+
+	loadCancel context.CancelFunc
+	loadSeq    uint64
 
 	detailsCard    *widget.Card
 	metadataLabel  *widget.Label
 	presignedLabel *widget.Entry
 	tagsLabel      *widget.Label
+	previewBtn     *widget.Button
+
+	previewContentEntry *widget.Entry
+	previewStatusLabel  *widget.Label
 
 	transferList *widget.List
 
@@ -260,6 +272,9 @@ func (d *DesktopApp) buildCenterPanel() fyne.CanvasObject {
 	uploadFolderBtn := widget.NewButtonWithIcon("Upload Folder", theme.FolderNewIcon(), func() {
 		d.showUploadFolderDialog()
 	})
+	previewTopBtn := widget.NewButtonWithIcon("Preview", theme.VisibilityIcon(), func() {
+		d.previewSelectedObject()
+	})
 	downloadBtn := widget.NewButtonWithIcon("Download", theme.DownloadIcon(), func() {
 		d.downloadSelectedObject()
 	})
@@ -269,6 +284,7 @@ func (d *DesktopApp) buildCenterPanel() fyne.CanvasObject {
 	actionsBar := container.NewHBox(
 		uploadFileBtn,
 		uploadFolderBtn,
+		previewTopBtn,
 		downloadBtn,
 		deleteBtn,
 	)
@@ -350,7 +366,43 @@ func (d *DesktopApp) buildCenterPanel() fyne.CanvasObject {
 		}
 	}
 
-	return container.NewBorder(tableHeader, nil, nil, nil, d.objectTable)
+	d.loadingBar = widget.NewProgressBarInfinite()
+	d.loadingBar.Stop()
+	d.loadingLabel = widget.NewLabel("Loading objects...")
+	d.loadingLabel.TextStyle = fyne.TextStyle{Italic: true}
+	d.loadingContainer = container.NewCenter(
+		container.NewVBox(
+			d.loadingLabel,
+			container.NewGridWrap(fyne.NewSize(240, 10), d.loadingBar),
+		),
+	)
+	d.loadingContainer.Hide()
+
+	emptyMsg := widget.NewLabel("This bucket is empty.\nUse 'Upload File' or 'Upload Folder' to add items.")
+	emptyMsg.Wrapping = fyne.TextWrapWord
+	emptyUploadBtn := widget.NewButtonWithIcon("Upload File", theme.UploadIcon(), func() {
+		d.showUploadDialog()
+	})
+	emptyUploadFolderBtn := widget.NewButtonWithIcon("Upload Folder", theme.FolderNewIcon(), func() {
+		d.showUploadFolderDialog()
+	})
+	d.emptyStateCard = widget.NewCard(
+		"No Objects Found",
+		"",
+		container.NewVBox(
+			emptyMsg,
+			container.NewHBox(emptyUploadBtn, emptyUploadFolderBtn),
+		),
+	)
+	d.emptyStateCard.Hide()
+
+	d.centerContainer = container.NewStack(
+		d.objectTable,
+		d.emptyStateCard,
+		d.loadingContainer,
+	)
+
+	return container.NewBorder(tableHeader, nil, nil, nil, d.centerContainer)
 }
 
 func (d *DesktopApp) buildRightPanel() fyne.CanvasObject {
@@ -367,9 +419,29 @@ func (d *DesktopApp) buildRightPanel() fyne.CanvasObject {
 	d.tagsLabel = widget.NewLabel("Tags: None")
 	d.tagsLabel.Wrapping = fyne.TextWrapWord
 
+	d.previewBtn = widget.NewButtonWithIcon("Preview Object", theme.VisibilityIcon(), func() {
+		d.previewSelectedObject()
+	})
+
+	d.previewStatusLabel = widget.NewLabel("Click 'Preview Object' or double-click to view content.")
+	d.previewStatusLabel.Wrapping = fyne.TextWrapWord
+	d.previewStatusLabel.TextStyle = fyne.TextStyle{Italic: true}
+
+	d.previewContentEntry = widget.NewMultiLineEntry()
+	d.previewContentEntry.Wrapping = fyne.TextWrapWord
+	d.previewContentEntry.SetPlaceHolder("Object content preview will appear here...")
+	d.previewContentEntry.Disable()
+
+	previewScroll := container.NewGridWrap(fyne.NewSize(320, 200), d.previewContentEntry)
+
 	detailsContent := container.NewVBox(
 		widget.NewLabelWithStyle("Metadata", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		d.metadataLabel,
+		widget.NewSeparator(),
+		widget.NewLabelWithStyle("Content Preview", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		container.NewHBox(d.previewBtn),
+		d.previewStatusLabel,
+		previewScroll,
 		widget.NewSeparator(),
 		widget.NewLabelWithStyle("Presigned URL", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		genURLBtn,
@@ -536,44 +608,153 @@ func (d *DesktopApp) selectBucket(name string) {
 	d.selectedObject = nil
 	d.mu.Unlock()
 
+	d.selectObject(nil)
 	d.loadObjects()
 }
 
 func (d *DesktopApp) loadObjects() {
-	d.mu.RLock()
+	d.mu.Lock()
+	if d.loadCancel != nil {
+		d.loadCancel()
+		d.loadCancel = nil
+	}
+	d.loadSeq++
+	currentSeq := d.loadSeq
+
 	acc := d.selectedAccount
 	bucket := d.selectedBucket
 	prefix := d.currentPrefix
-	d.mu.RUnlock()
 
 	if acc == nil || bucket == "" {
+		d.objects = nil
+		d.filteredObjects = nil
+		d.mu.Unlock()
+		d.updateTableViewState(false, 0)
 		return
 	}
 
-	ctx := context.Background()
-	oService, err := d.container.CreateObjectService(ctx, acc.Name)
-	if err != nil {
-		dialog.ShowError(err, d.window)
-		return
-	}
-
-	res, err := oService.ListObjects(ctx, bucket, objectDomain.ObjectFilter{
-		Prefix:    prefix,
-		Delimiter: "/",
-		MaxKeys:   1000,
-	})
-	if err != nil {
-		dialog.ShowError(err, d.window)
-		return
-	}
-
-	d.mu.Lock()
-	d.objects = res.Objects
-	d.applyFilterLocked()
+	ctx, cancel := context.WithCancel(context.Background())
+	d.loadCancel = cancel
 	d.mu.Unlock()
 
-	if d.objectTable != nil {
-		d.objectTable.Refresh()
+	d.updateTableViewState(true, 0)
+
+	go func() {
+		defer cancel()
+
+		oService, err := d.container.CreateObjectService(ctx, acc.Name)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			fyne.Do(func() {
+				d.mu.Lock()
+				if d.loadSeq != currentSeq {
+					d.mu.Unlock()
+					return
+				}
+				d.mu.Unlock()
+				d.updateTableViewState(false, 0)
+				dialog.ShowError(err, d.window)
+			})
+			return
+		}
+
+		var allObjects []objectDomain.Object
+		continuation := ""
+		const maxBatchKeys = 1000
+		const maxTotalKeys = 50000
+
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+
+			res, err := oService.ListObjects(ctx, bucket, objectDomain.ObjectFilter{
+				Prefix:       prefix,
+				Delimiter:    "/",
+				MaxKeys:      maxBatchKeys,
+				Continuation: continuation,
+			})
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				fyne.Do(func() {
+					d.mu.Lock()
+					if d.loadSeq != currentSeq {
+						d.mu.Unlock()
+						return
+					}
+					d.mu.Unlock()
+					d.updateTableViewState(false, len(allObjects))
+					dialog.ShowError(err, d.window)
+				})
+				return
+			}
+
+			allObjects = append(allObjects, res.Objects...)
+
+			// Update loading label with count progress if paginating
+			loadedCount := len(allObjects)
+			if res.IsTruncated && res.NextContinuationToken != "" && loadedCount < maxTotalKeys {
+				continuation = res.NextContinuationToken
+				fyne.Do(func() {
+					d.mu.Lock()
+					if d.loadSeq == currentSeq && d.loadingLabel != nil {
+						d.loadingLabel.SetText(fmt.Sprintf("Loading objects (%d loaded)...", loadedCount))
+					}
+					d.mu.Unlock()
+				})
+			} else {
+				break
+			}
+		}
+
+		fyne.Do(func() {
+			d.mu.Lock()
+			if d.loadSeq != currentSeq {
+				d.mu.Unlock()
+				return
+			}
+			d.objects = allObjects
+			d.applyFilterLocked()
+			totalFiltered := len(d.filteredObjects)
+			d.mu.Unlock()
+
+			d.updateTableViewState(false, totalFiltered)
+		})
+	}()
+}
+
+func (d *DesktopApp) updateTableViewState(loading bool, itemCount int) {
+	if d.loadingContainer == nil || d.objectTable == nil || d.emptyStateCard == nil {
+		return
+	}
+
+	if loading {
+		if d.loadingBar != nil {
+			d.loadingBar.Start()
+		}
+		if d.loadingLabel != nil {
+			d.loadingLabel.SetText("Loading objects...")
+		}
+		d.loadingContainer.Show()
+		d.emptyStateCard.Hide()
+		d.objectTable.Hide()
+	} else {
+		if d.loadingBar != nil {
+			d.loadingBar.Stop()
+		}
+		d.loadingContainer.Hide()
+		if itemCount == 0 {
+			d.emptyStateCard.Show()
+			d.objectTable.Hide()
+		} else {
+			d.emptyStateCard.Hide()
+			d.objectTable.Show()
+			d.objectTable.Refresh()
+		}
 	}
 }
 
@@ -581,11 +762,10 @@ func (d *DesktopApp) onSearchChanged(query string) {
 	d.mu.Lock()
 	d.searchQuery = strings.TrimSpace(strings.ToLower(query))
 	d.applyFilterLocked()
+	total := len(d.filteredObjects)
 	d.mu.Unlock()
 
-	if d.objectTable != nil {
-		d.objectTable.Refresh()
-	}
+	d.updateTableViewState(false, total)
 }
 
 func (d *DesktopApp) applyFilterLocked() {
@@ -609,9 +789,21 @@ func (d *DesktopApp) selectObject(obj *objectDomain.Object) {
 	d.mu.Unlock()
 
 	if obj == nil {
-		d.metadataLabel.SetText("Select an object to inspect details.")
-		d.presignedLabel.SetText("")
-		d.tagsLabel.SetText("Tags: None")
+		if d.metadataLabel != nil {
+			d.metadataLabel.SetText("Select an object to inspect details.")
+		}
+		if d.presignedLabel != nil {
+			d.presignedLabel.SetText("")
+		}
+		if d.tagsLabel != nil {
+			d.tagsLabel.SetText("Tags: None")
+		}
+		if d.previewStatusLabel != nil {
+			d.previewStatusLabel.SetText("Click 'Preview Object' or double-click to view content.")
+		}
+		if d.previewContentEntry != nil {
+			d.previewContentEntry.SetText("")
+		}
 		return
 	}
 
@@ -624,19 +816,30 @@ func (d *DesktopApp) selectObject(obj *objectDomain.Object) {
 		obj.LastModified.Format("2006-01-02 15:04:05 UTC"),
 		obj.ETag,
 	)
-	d.metadataLabel.SetText(details)
-	d.presignedLabel.SetText("")
+	if d.metadataLabel != nil {
+		d.metadataLabel.SetText(details)
+	}
+	if d.presignedLabel != nil {
+		d.presignedLabel.SetText("")
+	}
+	if d.previewStatusLabel != nil {
+		d.previewStatusLabel.SetText(fmt.Sprintf("Ready to preview %s (%s)", filepath.Base(obj.Key), formatBytes(obj.Size)))
+	}
+	if d.previewContentEntry != nil {
+		d.previewContentEntry.SetText("")
+	}
 
-	go d.fetchObjectTags(obj.Key)
+	go d.fetchObjectDetailsAndTags(obj.Key)
 }
 
-func (d *DesktopApp) fetchObjectTags(key string) {
+func (d *DesktopApp) fetchObjectDetailsAndTags(key string) {
 	d.mu.RLock()
 	acc := d.selectedAccount
 	bucket := d.selectedBucket
+	selected := d.selectedObject
 	d.mu.RUnlock()
 
-	if acc == nil || bucket == "" {
+	if acc == nil || bucket == "" || selected == nil || selected.Key != key {
 		return
 	}
 
@@ -646,23 +849,207 @@ func (d *DesktopApp) fetchObjectTags(key string) {
 		return
 	}
 
+	meta, err := oService.GetObjectMetadata(ctx, bucket, key, "")
+	if err == nil {
+		fyne.Do(func() {
+			d.mu.RLock()
+			cur := d.selectedObject
+			d.mu.RUnlock()
+			if cur == nil || cur.Key != key {
+				return
+			}
+
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("Key: %s\n", cur.Key))
+			sb.WriteString(fmt.Sprintf("Size: %s (%d bytes)\n", formatBytes(cur.Size), cur.Size))
+			if meta.ContentType != "" {
+				sb.WriteString(fmt.Sprintf("Content-Type: %s\n", meta.ContentType))
+			}
+			sb.WriteString(fmt.Sprintf("Storage Class: %s\n", cur.StorageClass))
+			sb.WriteString(fmt.Sprintf("Last Modified: %s\n", cur.LastModified.Format("2006-01-02 15:04:05 UTC")))
+			if cur.ETag != "" {
+				sb.WriteString(fmt.Sprintf("ETag: %s\n", cur.ETag))
+			}
+			if meta.CacheControl != "" {
+				sb.WriteString(fmt.Sprintf("Cache-Control: %s\n", meta.CacheControl))
+			}
+			if meta.ContentEncoding != "" {
+				sb.WriteString(fmt.Sprintf("Content-Encoding: %s\n", meta.ContentEncoding))
+			}
+			if len(meta.UserMetadata) > 0 {
+				sb.WriteString("User Metadata:\n")
+				for k, v := range meta.UserMetadata {
+					sb.WriteString(fmt.Sprintf("  %s: %s\n", k, v))
+				}
+			}
+
+			if d.metadataLabel != nil {
+				d.metadataLabel.SetText(strings.TrimRight(sb.String(), "\n"))
+			}
+		})
+	}
+
 	tags, err := oService.GetObjectTags(ctx, bucket, key, "")
-	if err != nil {
-		d.tagsLabel.SetText("Tags: (None or inaccessible)")
-		return
-	}
+	fyne.Do(func() {
+		d.mu.RLock()
+		cur := d.selectedObject
+		d.mu.RUnlock()
+		if cur == nil || cur.Key != key {
+			return
+		}
 
-	if len(tags) == 0 {
-		d.tagsLabel.SetText("Tags: None")
-		return
-	}
-
-	var sb strings.Builder
-	for _, t := range tags {
-		sb.WriteString(fmt.Sprintf("%s = %s\n", t.Key, t.Value))
-	}
-	d.tagsLabel.SetText(sb.String())
+		if err != nil {
+			if d.tagsLabel != nil {
+				d.tagsLabel.SetText("Tags: (None or inaccessible)")
+			}
+			return
+		}
+		if len(tags) == 0 {
+			if d.tagsLabel != nil {
+				d.tagsLabel.SetText("Tags: None")
+			}
+			return
+		}
+		var sb strings.Builder
+		for _, t := range tags {
+			sb.WriteString(fmt.Sprintf("%s = %s\n", t.Key, t.Value))
+		}
+		if d.tagsLabel != nil {
+			d.tagsLabel.SetText(strings.TrimRight(sb.String(), "\n"))
+		}
+	})
 }
+
+func (d *DesktopApp) previewSelectedObject() {
+	d.mu.RLock()
+	acc := d.selectedAccount
+	bucket := d.selectedBucket
+	obj := d.selectedObject
+	d.mu.RUnlock()
+
+	if acc == nil || bucket == "" || obj == nil {
+		dialog.ShowInformation("Select Object", "Please select an object to preview.", d.window)
+		return
+	}
+
+	key := obj.Key
+	if d.previewStatusLabel != nil {
+		d.previewStatusLabel.SetText("Fetching preview...")
+	}
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		oService, err := d.container.CreateObjectService(ctx, acc.Name)
+		if err != nil {
+			fyne.Do(func() {
+				if d.previewStatusLabel != nil {
+					d.previewStatusLabel.SetText("Failed to initialize object service")
+				}
+				dialog.ShowError(err, d.window)
+			})
+			return
+		}
+
+		content, err := oService.GetObject(ctx, bucket, key, "")
+		if err != nil {
+			fyne.Do(func() {
+				if d.previewStatusLabel != nil {
+					d.previewStatusLabel.SetText("Failed to fetch object content")
+				}
+				dialog.ShowError(err, d.window)
+			})
+			return
+		}
+		defer content.Body.Close()
+
+		const maxPreviewBytes = 64 * 1024
+		buf := make([]byte, maxPreviewBytes)
+		n, _ := io.ReadFull(content.Body, buf)
+		snippet := buf[:n]
+
+		isBinary := false
+		for _, b := range snippet {
+			if b == 0 {
+				isBinary = true
+				break
+			}
+		}
+
+		var previewText string
+		var statusDesc string
+
+		if isBinary {
+			statusDesc = fmt.Sprintf("Binary file (%s). Showing hex snippet of first %d bytes:", formatBytes(obj.Size), n)
+			var hexLines strings.Builder
+			for i := 0; i < n && i < 512; i += 16 {
+				end := i + 16
+				if end > n {
+					end = n
+				}
+				chunk := snippet[i:end]
+				hexPart := ""
+				asciiPart := ""
+				for _, b := range chunk {
+					hexPart += fmt.Sprintf("%02X ", b)
+					if b >= 32 && b <= 126 {
+						asciiPart += string(b)
+					} else {
+						asciiPart += "."
+					}
+				}
+				for len(hexPart) < 48 {
+					hexPart += "   "
+				}
+				hexLines.WriteString(fmt.Sprintf("%04X: %s |%s|\n", i, hexPart, asciiPart))
+			}
+			previewText = hexLines.String()
+		} else {
+			statusDesc = fmt.Sprintf("Text file (%s). Previewing first %d bytes:", formatBytes(obj.Size), n)
+			cleanText := strings.ReplaceAll(string(snippet), "\x00", "")
+			previewText = cleanText
+		}
+
+		fyne.Do(func() {
+			d.mu.RLock()
+			cur := d.selectedObject
+			d.mu.RUnlock()
+			if cur != nil && cur.Key == key {
+				if d.previewStatusLabel != nil {
+					d.previewStatusLabel.SetText(statusDesc)
+				}
+				if d.previewContentEntry != nil {
+					d.previewContentEntry.SetText(previewText)
+				}
+			}
+			d.showPreviewDialog(key, statusDesc, previewText)
+		})
+	}()
+}
+
+func (d *DesktopApp) showPreviewDialog(key, statusDesc, previewText string) {
+	title := fmt.Sprintf("Preview: %s", filepath.Base(key))
+	descLabel := widget.NewLabel(statusDesc)
+	descLabel.TextStyle = fyne.TextStyle{Italic: true}
+
+	entry := widget.NewMultiLineEntry()
+	entry.Wrapping = fyne.TextWrapWord
+	entry.SetText(previewText)
+
+	contentBox := container.NewBorder(
+		descLabel,
+		nil,
+		nil,
+		nil,
+		container.NewGridWrap(fyne.NewSize(680, 420), entry),
+	)
+
+	dModal := dialog.NewCustom(title, "Close", contentBox, d.window)
+	dModal.Resize(fyne.NewSize(720, 500))
+	dModal.Show()
+}
+
 
 func (d *DesktopApp) generatePresignedURL() {
 	d.mu.RLock()

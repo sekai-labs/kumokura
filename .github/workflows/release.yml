@@ -100,8 +100,82 @@ jobs:
           name: artifacts-${{ matrix.goos }}-${{ matrix.goarch }}
           path: release-artifacts/*
 
-  release:
+
+  package-arch:
     needs: build
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies for build
+        run: |
+          pacman -Syu --noconfirm --needed go git libglvnd libx11 libxcursor libxrandr libxinerama libxi libxxf86vm wayland libxkbcommon wayland-protocols
+
+      - name: Prepare unprivileged build user
+        run: |
+          useradd -m -G wheel builder
+          echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+
+      - name: Build Arch Linux package with makepkg
+        run: |
+          TAG_NAME="${GITHUB_REF_NAME#v}"
+          cd packaging/arch
+          # Update pkgver in PKGBUILD to match tag
+          sed -i "s/^pkgver=.*/pkgver=${TAG_NAME}/" PKGBUILD
+          # We are building inside the checked-out repo directly:
+          # Adjust source in PKGBUILD or build local directory
+          cat << 'EOF' > PKGBUILD.local
+          pkgname=kumokura
+          pkgver=LOCALVER
+          pkgrel=1
+          pkgdesc="High-performance, cross-cloud S3 storage manager in Go with CLI, TUI, and Desktop GUI"
+          arch=('x86_64')
+          url="https://github.com/sekai-labs/kumokura"
+          license=('MIT')
+          depends=('glibc' 'libglvnd' 'libx11' 'libxcursor' 'libxrandr' 'libxinerama' 'libxi' 'libxxf86vm' 'wayland' 'libxkbcommon')
+          optdepends=('libsecret: OS keyring credentials storage on GNOME/FreeDesktop')
+
+          package() {
+              install -Dm755 "$REPO_ROOT/dist/kumokura" "$pkgdir/usr/bin/kumokura"
+              install -Dm755 "$REPO_ROOT/dist/kumokura-tui" "$pkgdir/usr/bin/kumokura-tui"
+              install -Dm755 "$REPO_ROOT/dist/kumokura-desktop" "$pkgdir/usr/bin/kumokura-desktop"
+              install -Dm644 "$REPO_ROOT/packaging/arch/kumokura.desktop" "$pkgdir/usr/share/applications/kumokura.desktop"
+              install -Dm644 "$REPO_ROOT/packaging/arch/kumokura.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/kumokura.svg"
+              if [ -f "$REPO_ROOT/LICENSE" ]; then
+                  install -Dm644 "$REPO_ROOT/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+              fi
+          }
+          EOF
+          sed -i "s/LOCALVER/${TAG_NAME}/" PKGBUILD.local
+
+      - name: Download Linux amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: artifacts-linux-amd64
+          path: artifacts-linux-amd64
+
+      - name: Unpack Linux binaries and assemble Arch package
+        run: |
+          mkdir -p dist
+          tar -xzf artifacts-linux-amd64/*.tar.gz -C dist
+          cd packaging/arch
+          export REPO_ROOT="$GITHUB_WORKSPACE"
+          su builder -c "export REPO_ROOT='$GITHUB_WORKSPACE'; cd '$GITHUB_WORKSPACE/packaging/arch'; makepkg -p PKGBUILD.local --nodeps --noextract --nobuild"
+          mkdir -p "$GITHUB_WORKSPACE/release-arch"
+          cp *.pkg.tar.zst "$GITHUB_WORKSPACE/release-arch/"
+
+      - name: Upload Arch Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-arch-linux
+          path: release-arch/*
+
+  release:
+    needs: [build, package-arch]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -112,6 +186,10 @@ jobs:
         with:
           path: release-artifacts
           merge-multiple: true
+
+      - name: Copy Windows installer script to release assets
+        run: |
+          cp packaging/windows/install.ps1 release-artifacts/install-windows.ps1
 
       - name: Generate SHA256 checksums
         working-directory: release-artifacts

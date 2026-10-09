@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
+	"log"
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -11,6 +13,17 @@ import (
 )
 
 func main() {
+	// Silence stdlib logging to prevent terminal corruption during alt-screen execution
+	if logPath := os.Getenv("KUMOKURA_LOG_FILE"); logPath != "" {
+		f, err := tea.LogToFile(logPath, "kumokura-tui")
+		if err == nil {
+			defer f.Close()
+		} else {
+			log.SetOutput(io.Discard)
+		}
+	} else {
+		log.SetOutput(io.Discard)
+	}
 	ctx := context.Background()
 	app, err := bootstrap.Initialize(ctx)
 	if err != nil {

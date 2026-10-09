@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="cloudGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#0284c7"/>
+    </linearGradient>
+    <linearGradient id="boxGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f8fafc"/>
+      <stop offset="100%" stop-color="#cbd5e1"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+
+  <!-- Background circle -->
+  <rect width="128" height="128" rx="28" fill="#0f172a"/>
+
+  <!-- Cloud shape -->
+  <g filter="url(#shadow)">
+    <path d="M 42 74 
+             A 18 18 0 0 1 42 42 
+             A 26 26 0 0 1 82 34 
+             A 20 20 0 0 1 96 52 
+             A 22 22 0 0 1 90 74 
+             Z" 
+          fill="url(#cloudGrad)"/>
+  </g>
+
+  <!-- Vault / Storage box in center -->
+  <g filter="url(#shadow)">
+    <path d="M 46 62 L 82 62 L 78 88 L 50 88 Z" fill="url(#boxGrad)"/>
+    <rect x="52" y="66" width="24" height="4" rx="2" fill="#0284c7"/>
+    <!-- Keyhole / lock circle -->
+    <circle cx="64" cy="76" r="3" fill="#0369a1"/>
+    <path d="M 63 77 L 65 77 L 66 82 L 62 82 Z" fill="#0369a1"/>
+  </g>
+</svg>

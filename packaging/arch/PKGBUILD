@@ -1,0 +1,75 @@
+# Maintainer: Sekai Labs <dev@sekai.labs>
+pkgname=kumokura
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="High-performance, cross-cloud S3 storage manager in Go with CLI, TUI, and Desktop GUI"
+arch=('x86_64' 'aarch64')
+url="https://github.com/sekai-labs/kumokura"
+license=('MIT')
+depends=(
+    'glibc'
+    'libglvnd'
+    'libx11'
+    'libxcursor'
+    'libxrandr'
+    'libxinerama'
+    'libxi'
+    'libxxf86vm'
+    'wayland'
+    'libxkbcommon'
+)
+makedepends=(
+    'go>=1.24'
+    'git'
+    'wayland-protocols'
+)
+optdepends=(
+    'libsecret: OS keyring credentials storage on GNOME/FreeDesktop'
+)
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz"
+        "kumokura.desktop"
+        "kumokura.svg")
+sha256sums=('SKIP'
+            'SKIP'
+            'SKIP')
+
+build() {
+    cd "$pkgname-$pkgver"
+    export CGO_CPPFLAGS="${CPPFLAGS}"
+    export CGO_CFLAGS="${CFLAGS}"
+    export CGO_CXXFLAGS="${CXXFLAGS}"
+    export CGO_LDFLAGS="${LDFLAGS}"
+    export GOFLAGS="-buildmode=pie -trimpath -ldflags=-linkmode=external -mod=readonly -modcacherw"
+
+    echo "Building kumokura CLI..."
+    go build -o bin/kumokura ./cmd/kumokura
+
+    echo "Building kumokura TUI..."
+    go build -o bin/kumokura-tui ./cmd/kumokura-tui
+
+    echo "Building kumokura Desktop GUI..."
+    go build -tags wayland -o bin/kumokura-desktop ./cmd/kumokura-desktop
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+
+    # Install binaries
+    install -Dm755 bin/kumokura "$pkgdir/usr/bin/kumokura"
+    install -Dm755 bin/kumokura-tui "$pkgdir/usr/bin/kumokura-tui"
+    install -Dm755 bin/kumokura-desktop "$pkgdir/usr/bin/kumokura-desktop"
+
+    # Install desktop entry and icon
+    install -Dm644 "$srcdir/kumokura.desktop" "$pkgdir/usr/share/applications/kumokura.desktop"
+    install -Dm644 "$srcdir/kumokura.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/kumokura.svg"
+
+    # Install license
+    if [ -f LICENSE ]; then
+        install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    fi
+
+    # Install documentation
+    if [ -f README.md ]; then
+        install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+    fi
+}

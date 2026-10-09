@@ -92,3 +92,46 @@ func TestTUI_HelpModal(t *testing.T) {
 	closed := mEsc.(Model)
 	assert.False(t, closed.showHelpModal)
 }
+
+func TestTUI_UploadModal(t *testing.T) {
+	model := NewModel(Services{})
+	model.activeBucket = "test-bucket"
+
+	// Press 'u' to open upload modal
+	m, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	updated := m.(Model)
+	assert.True(t, updated.uploadModal.Active)
+	assert.Contains(t, updated.uploadModal.Destination, "test-bucket")
+
+	view := updated.View()
+	assert.Contains(t, view, "UPLOAD OBJECT")
+	assert.Contains(t, view, "Local file path:")
+
+	// Press 'esc' to cancel
+	mEsc, _ := updated.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	closed := mEsc.(Model)
+	assert.False(t, closed.uploadModal.Active)
+}
+
+func TestTUI_PreviewSanitization(t *testing.T) {
+	model := NewModel(Services{})
+	model.activeBucket = "test-bucket"
+
+	// Binary content with null bytes and control codes
+	binaryData := []byte{0x00, 0x01, 0x1b, 0x5b, 0x32, 0x4a, 0x48, 0x65, 0x6c, 0x6c, 0x6f}
+	m, _ := model.Update(messages.ContentPreviewLoadedMsg{
+		Key:     "test.bin",
+		Content: string(binaryData),
+	})
+	updated := m.(Model)
+	assert.Equal(t, binaryData, updated.explorerView.PreviewContent)
+
+	// Text content
+	textData := "Line 1\nLine 2\nLine 3"
+	mText, _ := model.Update(messages.ContentPreviewLoadedMsg{
+		Key:     "test.txt",
+		Content: textData,
+	})
+	updatedText := mText.(Model)
+	assert.Equal(t, []byte(textData), updatedText.explorerView.PreviewContent)
+}

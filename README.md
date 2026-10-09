@@ -49,6 +49,28 @@ go build -o bin/kumokura-tui ./cmd/kumokura-tui
 go build -tags wayland -o bin/kumokura-desktop ./cmd/kumokura-desktop
 ```
 
+### Installation
+
+#### Arch Linux
+Install via `makepkg` or download the prebuilt `.pkg.tar.zst` from GitHub Releases:
+```bash
+git clone https://github.com/sekai-labs/kumokura.git
+cd kumokura/packaging/arch
+makepkg -si
+```
+Or install precompiled `.pkg.tar.zst` release:
+```bash
+sudo pacman -U https://github.com/sekai-labs/kumokura/releases/latest/download/kumokura-*-x86_64.pkg.tar.zst
+```
+
+#### Windows
+Kumokura can be installed automatically with PowerShell:
+```powershell
+irm https://raw.githubusercontent.com/sekai-labs/kumokura/main/packaging/windows/install.ps1 | iex
+```
+See the [Windows Installation Guide](docs/windows-install.md) for manual ZIP instructions, Scoop, and custom parameters.
+
+
 ### Adding Your First Storage Account
 
 ```bash
