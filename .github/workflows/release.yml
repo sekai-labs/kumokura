@@ -136,9 +136,10 @@ jobs:
       - name: Generate Arch PKGBUILD for prebuilt package
         run: |
           TAG_NAME="${GITHUB_REF_NAME#v}"
+          ARCH_PKGVER=$(echo "${TAG_NAME}" | tr '-' '_')
           cd packaging/arch
           # Update pkgver in PKGBUILD to match tag
-          sed -i "s/^pkgver=.*/pkgver=${TAG_NAME}/" PKGBUILD
+          sed -i "s/^pkgver=.*/pkgver=${ARCH_PKGVER}/" PKGBUILD
           # We are building inside the checked-out repo directly:
           # Adjust source in PKGBUILD or build local directory
           cat << 'EOF' > PKGBUILD.local
@@ -163,7 +164,7 @@ jobs:
               fi
           }
           EOF
-          sed -i "s/LOCALVER/${TAG_NAME}/" PKGBUILD.local
+          sed -i "s/LOCALVER/${ARCH_PKGVER}/" PKGBUILD.local
 
       - name: Download Linux amd64 artifact
         uses: actions/download-artifact@v4
@@ -241,6 +242,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           body_path: release_body.md
+          prerelease: ${{ contains(github.ref_name, '-rc') }}
           generate_release_notes: true
           files: |
             release-artifacts/*
