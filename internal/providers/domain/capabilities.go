@@ -7,33 +7,33 @@ import (
 type Feature string
 
 const (
-	FeatureVersioning       Feature = "Versioning"
-	FeatureObjectLock       Feature = "ObjectLock"
-	FeatureTagging          Feature = "Tagging"
-	FeatureMultipart        Feature = "Multipart"
-	FeatureLifecycle        Feature = "Lifecycle"
-	FeatureServerEncryption Feature = "ServerEncryption"
-	FeatureCORS             Feature = "CORS"
-	FeatureBucketPolicy     Feature = "BucketPolicy"
+	FeatureVersioning        Feature = "Versioning"
+	FeatureObjectLock        Feature = "ObjectLock"
+	FeatureTagging           Feature = "Tagging"
+	FeatureMultipart         Feature = "Multipart"
+	FeatureLifecycle         Feature = "Lifecycle"
+	FeatureServerEncryption  Feature = "ServerEncryption"
+	FeatureCORS              Feature = "CORS"
+	FeatureBucketPolicy      Feature = "BucketPolicy"
 	FeaturePublicAccessBlock Feature = "PublicAccessBlock"
 )
 
 type ProviderCapability struct {
-	SupportsVersioning      bool
-	SupportsObjectLock      bool
-	SupportsTagging         bool
-	SupportsMultipart       bool
-	SupportsLifecycle       bool
-	SupportsServerEncrypt   bool
-	SupportsCORS            bool
-	SupportsBucketPolicy    bool
+	SupportsVersioning        bool
+	SupportsObjectLock        bool
+	SupportsTagging           bool
+	SupportsMultipart         bool
+	SupportsLifecycle         bool
+	SupportsServerEncrypt     bool
+	SupportsCORS              bool
+	SupportsBucketPolicy      bool
 	SupportsPublicAccessBlock bool
-	SupportsAccelerate      bool
-	SupportsStorageClasses  []string
-	DefaultEndpoint         string
-	DefaultRegion           string
-	RequiresCustomEndpoint  bool
-	RecommendedPathStyle    bool
+	SupportsAccelerate        bool
+	SupportsStorageClasses    []string
+	DefaultEndpoint           string
+	DefaultRegion             string
+	RequiresCustomEndpoint    bool
+	RecommendedPathStyle      bool
 }
 
 func (c ProviderCapability) SupportsFeature(f Feature) bool {
@@ -72,7 +72,7 @@ func CapabilitiesForType(accType domain.AccountType) ProviderCapability {
 			SupportsLifecycle:         true,
 			SupportsServerEncrypt:     true,
 			SupportsCORS:              true,
-			SupportsBucketPolicy:       true,
+			SupportsBucketPolicy:      true,
 			SupportsPublicAccessBlock: true,
 			SupportsAccelerate:        true,
 			SupportsStorageClasses:    []string{"STANDARD", "STANDARD_IA", "ONEZONE_IA", "GLACIER", "DEEP_ARCHIVE", "INTELLIGENT_TIERING"},
@@ -90,7 +90,7 @@ func CapabilitiesForType(accType domain.AccountType) ProviderCapability {
 			SupportsLifecycle:         true,
 			SupportsServerEncrypt:     true,
 			SupportsCORS:              true,
-			SupportsBucketPolicy:       true,
+			SupportsBucketPolicy:      true,
 			SupportsPublicAccessBlock: false,
 			SupportsAccelerate:        false,
 			SupportsStorageClasses:    []string{"STANDARD"},
@@ -108,7 +108,7 @@ func CapabilitiesForType(accType domain.AccountType) ProviderCapability {
 			SupportsLifecycle:         true,
 			SupportsServerEncrypt:     false,
 			SupportsCORS:              true,
-			SupportsBucketPolicy:       false,
+			SupportsBucketPolicy:      false,
 			SupportsPublicAccessBlock: false,
 			SupportsAccelerate:        false,
 			SupportsStorageClasses:    []string{"STANDARD"},
@@ -126,7 +126,7 @@ func CapabilitiesForType(accType domain.AccountType) ProviderCapability {
 			SupportsLifecycle:         true,
 			SupportsServerEncrypt:     true,
 			SupportsCORS:              true,
-			SupportsBucketPolicy:       true,
+			SupportsBucketPolicy:      true,
 			SupportsPublicAccessBlock: false,
 			SupportsAccelerate:        false,
 			SupportsStorageClasses:    []string{"STANDARD"},
@@ -144,7 +144,7 @@ func CapabilitiesForType(accType domain.AccountType) ProviderCapability {
 			SupportsLifecycle:         true,
 			SupportsServerEncrypt:     true,
 			SupportsCORS:              true,
-			SupportsBucketPolicy:       false,
+			SupportsBucketPolicy:      false,
 			SupportsPublicAccessBlock: false,
 			SupportsAccelerate:        false,
 			SupportsStorageClasses:    []string{"STANDARD"},
@@ -162,7 +162,7 @@ func CapabilitiesForType(accType domain.AccountType) ProviderCapability {
 			SupportsLifecycle:         true,
 			SupportsServerEncrypt:     false,
 			SupportsCORS:              true,
-			SupportsBucketPolicy:       false,
+			SupportsBucketPolicy:      false,
 			SupportsPublicAccessBlock: false,
 			SupportsAccelerate:        false,
 			SupportsStorageClasses:    []string{"STANDARD"},
@@ -180,7 +180,7 @@ func CapabilitiesForType(accType domain.AccountType) ProviderCapability {
 			SupportsLifecycle:         true,
 			SupportsServerEncrypt:     true,
 			SupportsCORS:              true,
-			SupportsBucketPolicy:       true,
+			SupportsBucketPolicy:      true,
 			SupportsPublicAccessBlock: false,
 			SupportsAccelerate:        false,
 			SupportsStorageClasses:    []string{"STANDARD"},
@@ -200,7 +200,7 @@ func CapabilitiesForType(accType domain.AccountType) ProviderCapability {
 			SupportsLifecycle:         true,
 			SupportsServerEncrypt:     false,
 			SupportsCORS:              true,
-			SupportsBucketPolicy:       false,
+			SupportsBucketPolicy:      false,
 			SupportsPublicAccessBlock: false,
 			SupportsAccelerate:        false,
 			SupportsStorageClasses:    []string{"STANDARD"},

@@ -21,7 +21,6 @@ var (
 
 type activeJobContext struct {
 	cancel context.CancelFunc
-	pause  chan struct{}
 }
 
 type TransferService struct {

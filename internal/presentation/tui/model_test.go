@@ -17,7 +17,7 @@ func TestTUI_ModelInitAndRender(t *testing.T) {
 
 	viewStr := model.View()
 	assert.NotEmpty(t, viewStr)
-	assert.Contains(t, viewStr, "1: Explorer")
+	assert.Contains(t, viewStr, "[1 Buckets]")
 	assert.Contains(t, viewStr, "BUCKETS")
 }
 
@@ -41,13 +41,19 @@ func TestTUI_ResponsiveResize(t *testing.T) {
 func TestTUI_TabSwitching(t *testing.T) {
 	model := NewModel(Services{})
 
-	m2, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
-	updated := m2.(Model)
-	assert.Equal(t, 1, updated.activeTab)
+	m3, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'3'}})
+	updated := m3.(Model)
+	assert.Equal(t, 2, updated.activeTab)
 	viewTransfers := updated.View()
 	assert.Contains(t, viewTransfers, "TRANSFERS")
 
-	m1, _ := updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
+	m4, _ := updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'4'}})
+	updated4 := m4.(Model)
+	assert.Equal(t, 3, updated4.activeTab)
+	viewSync := updated4.View()
+	assert.Contains(t, viewSync, "SYNC ENGINE")
+
+	m1, _ := updated4.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
 	updated1 := m1.(Model)
 	assert.Equal(t, 0, updated1.activeTab)
 }
@@ -97,17 +103,14 @@ func TestTUI_UploadModal(t *testing.T) {
 	model := NewModel(Services{})
 	model.activeBucket = "test-bucket"
 
-	// Press 'u' to open upload modal
 	m, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
 	updated := m.(Model)
 	assert.True(t, updated.uploadModal.Active)
 	assert.Contains(t, updated.uploadModal.Destination, "test-bucket")
 
 	view := updated.View()
-	assert.Contains(t, view, "UPLOAD OBJECT")
-	assert.Contains(t, view, "Local file path:")
-
-	// Press 'esc' to cancel
+	assert.Contains(t, view, "UPLOAD (FILE OR FOLDER)")
+	assert.Contains(t, view, "Local path (file or directory):")
 	mEsc, _ := updated.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	closed := mEsc.(Model)
 	assert.False(t, closed.uploadModal.Active)
@@ -117,7 +120,6 @@ func TestTUI_PreviewSanitization(t *testing.T) {
 	model := NewModel(Services{})
 	model.activeBucket = "test-bucket"
 
-	// Binary content with null bytes and control codes
 	binaryData := []byte{0x00, 0x01, 0x1b, 0x5b, 0x32, 0x4a, 0x48, 0x65, 0x6c, 0x6c, 0x6f}
 	m, _ := model.Update(messages.ContentPreviewLoadedMsg{
 		Key:     "test.bin",
@@ -126,7 +128,6 @@ func TestTUI_PreviewSanitization(t *testing.T) {
 	updated := m.(Model)
 	assert.Equal(t, binaryData, updated.explorerView.PreviewContent)
 
-	// Text content
 	textData := "Line 1\nLine 2\nLine 3"
 	mText, _ := model.Update(messages.ContentPreviewLoadedMsg{
 		Key:     "test.txt",
@@ -134,4 +135,53 @@ func TestTUI_PreviewSanitization(t *testing.T) {
 	})
 	updatedText := mText.(Model)
 	assert.Equal(t, []byte(textData), updatedText.explorerView.PreviewContent)
+}
+func TestTUI_DownloadModalAndFolderDownload(t *testing.T) {
+	model := NewModel(Services{})
+	model.activeBucket = "test-bucket"
+	model.explorerView.Objects = []objDomain.Object{
+		{Key: "data/file.txt", Size: 1024},
+	}
+	model.explorerView.Prefixes = []objDomain.Prefix{
+		{Prefix: "data/subfolder/"},
+	}
+
+	model.explorerView.SelectedObject = 0
+	mFolder, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	uFolder := mFolder.(Model)
+	assert.True(t, uFolder.downloadModal.Active)
+	assert.True(t, uFolder.downloadModal.IsFolder)
+	assert.Equal(t, "data/subfolder/", uFolder.downloadModal.TargetName)
+	viewFolder := uFolder.View()
+	assert.Contains(t, viewFolder, "DOWNLOAD FOLDER (RECURSIVE)")
+
+	model.explorerView.SelectedObject = 1
+	mObj, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	uObj := mObj.(Model)
+	assert.True(t, uObj.downloadModal.Active)
+	assert.False(t, uObj.downloadModal.IsFolder)
+	assert.Equal(t, "data/file.txt", uObj.downloadModal.TargetName)
+	viewObj := uObj.View()
+	assert.Contains(t, viewObj, "DOWNLOAD OBJECT")
+}
+
+func TestTUI_PresignModalAndInspectorToggle(t *testing.T) {
+	model := NewModel(Services{})
+	model.activeBucket = "test-bucket"
+	model.explorerView.Objects = []objDomain.Object{
+		{Key: "documents/spec.pdf", Size: 2048},
+	}
+	model.explorerView.SelectedObject = 0
+
+	mP, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	uP := mP.(Model)
+	assert.True(t, uP.presignModal.Active)
+	assert.Equal(t, "documents/spec.pdf", uP.presignModal.ObjectKey)
+	viewP := uP.View()
+	assert.Contains(t, viewP, "GENERATE PRESIGNED URL")
+
+	initialPreview := model.explorerView.ShowPreview
+	mI, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	uI := mI.(Model)
+	assert.Equal(t, !initialPreview, uI.explorerView.ShowPreview)
 }

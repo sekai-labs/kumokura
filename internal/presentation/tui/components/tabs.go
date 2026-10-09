@@ -27,16 +27,16 @@ func NewTabBar(tabs []TabItem, s styles.Styles) TabBar {
 	}
 }
 
-func (t *TabBar) Render(width int, activeAccount string, activeBucket string) string {
+func (t *TabBar) Render(width int, activeAccount string, activeRegion string, activeBucket string) string {
 	var tabsRendered []string
 
 	for i, tab := range t.Tabs {
 		title := tab.Title
 		if width < 90 {
-			// Compact titles for smaller terminals (e.g. "1:Exp" or "1:Explorer")
-			title = strings.Replace(title, " Explorer", " Exp", 1)
+			title = strings.Replace(title, " Buckets", " Bkt", 1)
+			title = strings.Replace(title, " Objects", " Obj", 1)
 			title = strings.Replace(title, " Transfers", " Xfer", 1)
-			title = strings.Replace(title, " Accounts", " Acc", 1)
+			title = strings.Replace(title, " Sync", " Sync", 1)
 		}
 		if i == t.Active {
 			tabsRendered = append(tabsRendered, t.styles.ActiveTab.Render(title))
@@ -48,13 +48,16 @@ func (t *TabBar) Render(width int, activeAccount string, activeBucket string) st
 	left := lipgloss.JoinHorizontal(lipgloss.Top, tabsRendered...)
 
 	var rightParts []string
-	// Only show badges if there is enough space
-	if width >= 100 && activeAccount != "" {
-		rightParts = append(rightParts, t.styles.BadgeAccount.Render(fmt.Sprintf("Acc: %s", activeAccount)))
+	if width >= 90 && activeAccount != "" {
+		profileLabel := fmt.Sprintf("Profile: %s", activeAccount)
+		if activeRegion != "" {
+			profileLabel = fmt.Sprintf("Profile: %s (%s)", activeAccount, activeRegion)
+		}
+		rightParts = append(rightParts, t.styles.BadgeAccount.Render(profileLabel))
 	}
-	if width >= 80 && activeBucket != "" {
+	if width >= 110 && activeBucket != "" {
 		bucketLabel := activeBucket
-		if len(bucketLabel) > 20 && width < 120 {
+		if len(bucketLabel) > 20 && width < 130 {
 			bucketLabel = bucketLabel[:19] + "…"
 		}
 		rightParts = append(rightParts, t.styles.BadgeAccount.Render(fmt.Sprintf("Bucket: %s", bucketLabel)))
@@ -64,7 +67,7 @@ func (t *TabBar) Render(width int, activeAccount string, activeBucket string) st
 
 	leftWidth := lipgloss.Width(left)
 	rightWidth := lipgloss.Width(right)
-	spacerWidth := width - leftWidth - rightWidth - 2 // account for padding
+	spacerWidth := width - leftWidth - rightWidth - 2
 	if spacerWidth < 1 {
 		spacerWidth = 1
 	}

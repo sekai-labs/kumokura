@@ -17,6 +17,7 @@ type ExplorerView struct {
 	Buckets         []bucketDomain.Bucket
 	SelectedBucket  int
 	BucketOffset    int
+	ActiveBucket    string
 	Objects         []objDomain.Object
 	Prefixes        []objDomain.Prefix
 	SelectedObject  int
@@ -27,7 +28,7 @@ type ExplorerView struct {
 	PreviewContent  []byte
 	PreviewScroll   int
 	ShowPreview     bool
-	ActivePaneIndex int // 0: Buckets, 1: Objects, 2: Preview
+	ActivePaneIndex int
 	styles          styles.Styles
 }
 
@@ -40,36 +41,39 @@ func NewExplorerView(s styles.Styles) ExplorerView {
 }
 
 func (v *ExplorerView) Render(width, height int) string {
-	if width < 80 || height < 12 {
+	if width < 80 || height < 24 {
 		return lipgloss.NewStyle().
 			Width(width).
 			Height(height).
 			Align(lipgloss.Center, lipgloss.Center).
-			Render("Terminal window too small. Minimum 80x24 recommended.")
+			Render("Terminal window too small: Kumokura requires minimum 80x24")
 	}
 
-	// Only show preview dock side-by-side if terminal is wide enough and user hasn't toggled it off
-	showPreview := v.ShowPreview && width >= 110
+	showPreview := v.ShowPreview && (width >= 160 || (width >= 120 && v.ShowPreview))
 
 	var leftInnerW, centerInnerW, rightInnerW int
-	if showPreview {
-		avail := width - 6 // 3 panels * 2 border cols
-		leftInnerW = max(20, width*20/100)
-		rightInnerW = max(28, width*32/100)
+	if showPreview && width >= 160 {
+		avail := width - 6
+		leftInnerW = max(24, avail*20/100)
+		rightInnerW = max(30, avail*30/100)
 		centerInnerW = avail - leftInnerW - rightInnerW
-		if centerInnerW < 24 {
-			// Not enough room for 3 panels comfortably, fall back to 2 panels
+	} else if showPreview && width >= 120 {
+		avail := width - 6
+		leftInnerW = max(22, avail*25/100)
+		rightInnerW = max(30, avail*30/100)
+		centerInnerW = avail - leftInnerW - rightInnerW
+		if centerInnerW < 30 {
 			showPreview = false
 		}
 	}
 
 	if !showPreview {
-		avail := width - 4 // 2 panels * 2 border cols
-		leftInnerW = max(22, min(35, width*26/100))
+		avail := width - 4
+		leftInnerW = max(24, avail*35/100)
 		centerInnerW = avail - leftInnerW
 	}
 
-	panelInnerH := height - 2 // account for borders
+	panelInnerH := height - 2
 	if panelInnerH < 4 {
 		panelInnerH = 4
 	}
@@ -88,20 +92,21 @@ func (v *ExplorerView) Render(width, height int) string {
 
 func (v *ExplorerView) renderLeftPanel(width, height int) string {
 	isActive := v.ActivePaneIndex == 0
-	headerTitle := fmt.Sprintf("BUCKETS (%d)", len(v.Buckets))
+	prefixText := ""
+	if isActive {
+		prefixText = "ACTIVE PANE: "
+	}
+	headerTitle := fmt.Sprintf("%sBUCKETS (%d)", prefixText, len(v.Buckets))
 	title := v.styles.PanelTitle.Render(headerTitle)
-
-	maxItems := height - 2 // 1 header line, 1 bottom pad
+	maxItems := height - 2
 	if maxItems < 1 {
 		maxItems = 1
 	}
 
-	// Ensure selection is within bounds
 	if v.SelectedBucket >= len(v.Buckets) {
 		v.SelectedBucket = max(0, len(v.Buckets)-1)
 	}
 
-	// Adjust scroll window
 	if v.SelectedBucket < v.BucketOffset {
 		v.BucketOffset = v.SelectedBucket
 	} else if v.SelectedBucket >= v.BucketOffset+maxItems {
@@ -150,20 +155,22 @@ func (v *ExplorerView) renderLeftPanel(width, height int) string {
 
 func (v *ExplorerView) renderCenterPanel(width, height int) string {
 	isActive := v.ActivePaneIndex == 1
-	totalItems := len(v.Prefixes) + len(v.Objects)
-	prefixDisplay := "/" + v.CurrentPrefix
-	availTitle := width - 18
-	if availTitle > 6 && lipgloss.Width(prefixDisplay) > availTitle {
-		prefixDisplay = "…" + prefixDisplay[len(prefixDisplay)-availTitle+1:]
+	bucketName := v.ActiveBucket
+	if bucketName == "" && len(v.Buckets) > v.SelectedBucket {
+		bucketName = v.Buckets[v.SelectedBucket].Name
 	}
-	titleText := fmt.Sprintf("OBJECTS: %s (%d)", prefixDisplay, totalItems)
+	s3Uri := fmt.Sprintf("s3://%s/%s", bucketName, v.CurrentPrefix)
+	availTitle := width - 20
+	if availTitle > 10 && lipgloss.Width(s3Uri) > availTitle {
+		s3Uri = "…" + s3Uri[len(s3Uri)-availTitle+1:]
+	}
+	titleText := fmt.Sprintf("OBJECT EXPLORER: %s", s3Uri)
 	title := v.styles.PanelTitle.Render(titleText)
-
+	totalItems := len(v.Prefixes) + len(v.Objects)
 	maxItems := height - 2
 	if maxItems < 1 {
 		maxItems = 1
 	}
-
 	if v.SelectedObject >= totalItems {
 		v.SelectedObject = max(0, totalItems-1)
 	}
@@ -178,8 +185,16 @@ func (v *ExplorerView) renderCenterPanel(width, height int) string {
 	}
 
 	var rows []string
+	keyColW := width - 26
+	if keyColW < 12 {
+		keyColW = 12
+	}
+	tblHeader := fmt.Sprintf("   %-*s %9s %12s", keyColW, "Key", "Size", "Last Modified")
+	rows = append(rows, v.styles.StatusKey.Render(tblHeader))
+	maxItems = max(1, maxItems-1)
+
 	if totalItems == 0 {
-		emptyMsg := v.styles.StatusDesc.Render("Prefix is empty (or no objects match filter)")
+		emptyMsg := v.styles.StatusDesc.Render("   Prefix is empty (or no objects match filter)")
 		rows = append(rows, emptyMsg)
 	} else {
 		prefixLen := len(v.Prefixes)
@@ -188,22 +203,20 @@ func (v *ExplorerView) renderCenterPanel(width, height int) string {
 		for i := v.ObjectOffset; i < endIdx; i++ {
 			var display string
 			if i < prefixLen {
-				// Directory
 				p := v.Prefixes[i]
 				name := p.Prefix
 				if v.CurrentPrefix != "" {
 					name = strings.TrimPrefix(name, v.CurrentPrefix)
 				}
-				maxNameW := width - 14
-				if maxNameW < 4 {
-					maxNameW = 4
+				maxNameW := width - 26
+				if maxNameW < 8 {
+					maxNameW = 8
 				}
 				if lipgloss.Width(name) > maxNameW {
 					name = name[:maxNameW-1] + "…"
 				}
-				display = fmt.Sprintf("📁 %-*s [DIR]", maxNameW, name)
+				display = fmt.Sprintf("📁 %-*s %9s %12s", maxNameW, name, "[DIR]", "-")
 			} else {
-				// Object
 				objIdx := i - prefixLen
 				obj := v.Objects[objIdx]
 				name := obj.Key
@@ -211,14 +224,12 @@ func (v *ExplorerView) renderCenterPanel(width, height int) string {
 					name = strings.TrimPrefix(name, v.CurrentPrefix)
 				}
 				sizeStr := formatBytes(obj.Size)
-				storageClass := string(obj.StorageClass)
-				if storageClass == "" {
-					storageClass = "STANDARD"
+				lastModStr := "-"
+				if !obj.LastModified.IsZero() {
+					lastModStr = obj.LastModified.Format("2006-01-02")
 				}
 
-				// Reserve room for size and storage class
-				metaWidth := 11 + len(storageClass) // e.g. " 1024.0 KiB STANDARD"
-				nameWidth := width - metaWidth - 7
+				nameWidth := width - 26
 				if nameWidth < 8 {
 					nameWidth = 8
 				}
@@ -226,7 +237,7 @@ func (v *ExplorerView) renderCenterPanel(width, height int) string {
 					name = name[:nameWidth-1] + "…"
 				}
 
-				display = fmt.Sprintf("📄 %-*s %9s %s", nameWidth, name, sizeStr, storageClass)
+				display = fmt.Sprintf("📄 %-*s %9s %12s", nameWidth, name, sizeStr, lastModStr)
 			}
 
 			var rowStr string
@@ -251,7 +262,7 @@ func (v *ExplorerView) renderCenterPanel(width, height int) string {
 
 func (v *ExplorerView) renderRightPanel(width, height int) string {
 	isActive := v.ActivePaneIndex == 2
-	title := v.styles.PanelTitle.Render("DETAILS & PREVIEW")
+	title := v.styles.PanelTitle.Render("OBJECT INSPECTOR")
 	var lines []string
 
 	if v.PreviewMetadata != nil {
@@ -285,9 +296,11 @@ func (v *ExplorerView) renderRightPanel(width, height int) string {
 	} else {
 		lines = append(lines, v.styles.StatusDesc.Render("Select an object to inspect details"))
 		lines = append(lines, "")
-		lines = append(lines, v.styles.StatusDesc.Render("Press [p] to inspect/toggle preview"))
-		lines = append(lines, v.styles.StatusDesc.Render("Press [u] to upload a file"))
-		lines = append(lines, v.styles.StatusDesc.Render("Press [D] to delete selected object"))
+		lines = append(lines, v.styles.StatusDesc.Render("Press [i] to toggle Inspector drawer"))
+		lines = append(lines, v.styles.StatusDesc.Render("Press [p] to generate presigned URL"))
+		lines = append(lines, v.styles.StatusDesc.Render("Press [u] to upload file/folder"))
+		lines = append(lines, v.styles.StatusDesc.Render("Press [d] to download object/folder"))
+		lines = append(lines, v.styles.StatusDesc.Render("Press [x] to delete selected object"))
 	}
 
 	content := lipgloss.JoinVertical(lipgloss.Left, title, strings.Join(lines, "\n"))
@@ -308,8 +321,6 @@ func truncateString(s string, maxLen int) string {
 	return s[:maxLen-1] + "…"
 }
 
-// SanitizePreviewContent safely prepares arbitrary preview bytes for terminal display without
-// emitting terminal escape sequences, control characters, or invalid UTF-8 sequences.
 func SanitizePreviewContent(data []byte, maxWidth, maxLines int) []string {
 	if len(data) == 0 {
 		return []string{"[Empty object]"}
@@ -322,11 +333,9 @@ func SanitizePreviewContent(data []byte, maxWidth, maxLines int) []string {
 		maxLines = 3
 	}
 
-	// Binary detection: check if invalid UTF-8 or contains null bytes
 	isBinary := !utf8.Valid(data) || bytes.IndexByte(data, 0) != -1
 
 	if isBinary {
-		// Format clean hex dump
 		var lines []string
 		lines = append(lines, fmt.Sprintf("[Binary file - %d bytes shown in hex]", min(len(data), 128)))
 		hexRows := min(len(data)/16+1, maxLines-1)
@@ -348,7 +357,6 @@ func SanitizePreviewContent(data []byte, maxWidth, maxLines int) []string {
 					asciiPart.WriteByte('.')
 				}
 			}
-			// Pad hexPart if chunk < 16
 			for i := len(chunk); i < 16; i++ {
 				hexPart.WriteString("   ")
 			}
@@ -359,7 +367,6 @@ func SanitizePreviewContent(data []byte, maxWidth, maxLines int) []string {
 		return lines
 	}
 
-	// Plain text: strip escape codes (\x1b) and non-printable control characters
 	text := string(data)
 	rawLines := strings.Split(text, "\n")
 	var cleanLines []string
@@ -377,7 +384,6 @@ func SanitizePreviewContent(data []byte, maxWidth, maxLines int) []string {
 			if r == '\t' {
 				b.WriteString("  ")
 			} else if unicode.IsControl(r) {
-				// Skip escape sequences and control characters
 				continue
 			} else {
 				b.WriteRune(r)

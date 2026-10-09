@@ -36,7 +36,6 @@ func (b *StatusBar) Render(width int, activeHelp []string, throughput float64, p
 	left := strings.Join(leftParts, " ")
 	leftWidth := lipgloss.Width(left)
 
-	// Dynamically fit activeHelp keys into remaining width
 	availForHelp := width - leftWidth - 6
 	if availForHelp < 0 {
 		availForHelp = 0
@@ -45,7 +44,7 @@ func (b *StatusBar) Render(width int, activeHelp []string, throughput float64, p
 	var rightParts []string
 	curHelpLen := 0
 	for _, h := range activeHelp {
-		hLen := lipgloss.Width(h) + 2 // including separator
+		hLen := lipgloss.Width(h) + 2
 		if curHelpLen+hLen > availForHelp {
 			break
 		}

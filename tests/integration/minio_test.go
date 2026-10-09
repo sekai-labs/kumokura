@@ -1,11 +1,8 @@
 package integration_test
 
 import (
-	"bytes"
 	"context"
 	"encoding/xml"
-	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -181,10 +178,4 @@ func TestS3LifecycleIntegration(t *testing.T) {
 		}
 	}
 	assert.False(t, foundAfter, "deleted bucket should not appear in bucket list")
-}
-
-func suppressUnused() {
-	var _ = bytes.Buffer{}
-	var _ = fmt.Sprintf("")
-	var _ io.Reader
 }

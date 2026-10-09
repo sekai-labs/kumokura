@@ -24,14 +24,14 @@ func (id AccountID) String() string {
 type AccountType string
 
 const (
-	TypeAWS                 AccountType = "AWS"
-	TypeMinIO               AccountType = "MinIO"
-	TypeCloudflareR2        AccountType = "CloudflareR2"
-	TypeWasabi              AccountType = "Wasabi"
-	TypeBackblazeB2         AccountType = "BackblazeB2"
-	TypeDigitalOceanSpaces  AccountType = "DigitalOceanSpaces"
-	TypeCeph                AccountType = "Ceph"
-	TypeCustomS3            AccountType = "CustomS3"
+	TypeAWS                AccountType = "AWS"
+	TypeMinIO              AccountType = "MinIO"
+	TypeCloudflareR2       AccountType = "CloudflareR2"
+	TypeWasabi             AccountType = "Wasabi"
+	TypeBackblazeB2        AccountType = "BackblazeB2"
+	TypeDigitalOceanSpaces AccountType = "DigitalOceanSpaces"
+	TypeCeph               AccountType = "Ceph"
+	TypeCustomS3           AccountType = "CustomS3"
 )
 
 func (t AccountType) IsValid() bool {

@@ -108,7 +108,6 @@ func (c *AppContainer) CreateBucketService(ctx context.Context, accountName stri
 		return nil, fmt.Errorf("list accounts: %w", err)
 	}
 
-
 	for _, acc := range accounts {
 		if accountName == "" || acc.Name == accountName || string(acc.ID) == accountName {
 			creds, err := c.AccountService.GetCredentials(ctx, acc.ID)

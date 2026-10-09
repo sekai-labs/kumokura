@@ -74,14 +74,14 @@ type SyncItem struct {
 }
 
 type SyncPlan struct {
-	Items           []SyncItem
-	TotalUploads    int
-	TotalDownloads  int
-	TotalDeletes    int
-	TotalSkips      int
-	TotalConflicts  int
-	TotalBytes      int64
-	CreatedAt       time.Time
+	Items          []SyncItem
+	TotalUploads   int
+	TotalDownloads int
+	TotalDeletes   int
+	TotalSkips     int
+	TotalConflicts int
+	TotalBytes     int64
+	CreatedAt      time.Time
 }
 
 type DiffResult struct {

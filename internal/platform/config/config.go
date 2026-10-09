@@ -14,11 +14,11 @@ type FolderConfig struct {
 }
 
 type Config struct {
-	ConfigDir             string `json:"config_dir"`
-	DataDir               string `json:"data_dir"`
-	DBPath                string `json:"db_path"`
-	SecretsDir            string `json:"secrets_dir"`
-	LogLevel              string `json:"log_level"`
+	ConfigDir            string `json:"config_dir"`
+	DataDir              string `json:"data_dir"`
+	DBPath               string `json:"db_path"`
+	SecretsDir           string `json:"secrets_dir"`
+	LogLevel             string `json:"log_level"`
 	MaxUploadConcurrency int    `json:"max_upload_concurrency"`
 }
 
@@ -38,11 +38,11 @@ func DefaultConfig() (*Config, error) {
 	dbPath := filepath.Join(dataDir, "kumokura.db")
 
 	cfg := &Config{
-		ConfigDir:             appConfigDir,
-		DataDir:               dataDir,
-		DBPath:                dbPath,
-		SecretsDir:            secretsDir,
-		LogLevel:              "INFO",
+		ConfigDir:            appConfigDir,
+		DataDir:              dataDir,
+		DBPath:               dbPath,
+		SecretsDir:           secretsDir,
+		LogLevel:             "INFO",
 		MaxUploadConcurrency: 100,
 	}
 

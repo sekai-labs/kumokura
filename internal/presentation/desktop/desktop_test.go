@@ -136,19 +136,16 @@ func TestDesktopAppLoadingAndEmptyState(t *testing.T) {
 	app := NewDesktopAppWithFyneApp(appContainer, fyneTestApp)
 	require.NotNil(t, app)
 
-	// Test loading state
 	app.updateTableViewState(true, 0)
 	assert.True(t, app.loadingContainer.Visible())
 	assert.False(t, app.objectTable.Visible())
 	assert.False(t, app.emptyStateCard.Visible())
 
-	// Test empty state
 	app.updateTableViewState(false, 0)
 	assert.False(t, app.loadingContainer.Visible())
 	assert.False(t, app.objectTable.Visible())
 	assert.True(t, app.emptyStateCard.Visible())
 
-	// Test populated state
 	app.updateTableViewState(false, 5)
 	assert.False(t, app.loadingContainer.Visible())
 	assert.True(t, app.objectTable.Visible())
@@ -172,12 +169,10 @@ func TestDesktopAppSelectObjectAndPreview(t *testing.T) {
 	app := NewDesktopAppWithFyneApp(appContainer, fyneTestApp)
 	require.NotNil(t, app)
 
-	// Nil selection resets metadata and preview labels
 	app.selectObject(nil)
 	assert.Equal(t, "Select an object to inspect details.", app.metadataLabel.Text)
 	assert.Equal(t, "", app.previewContentEntry.Text)
 
-	// Select an object
 	sampleObj := &objectDomain.Object{
 		Key:          "docs/hello.txt",
 		Size:         128,

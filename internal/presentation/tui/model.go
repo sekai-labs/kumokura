@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/aymanbagabas/go-osc52/v2"
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -24,6 +26,7 @@ import (
 	"github.com/sekai-labs/kumokura/internal/presentation/tui/messages"
 	"github.com/sekai-labs/kumokura/internal/presentation/tui/styles"
 	"github.com/sekai-labs/kumokura/internal/presentation/tui/views"
+	syncPorts "github.com/sekai-labs/kumokura/internal/synchronization/ports"
 	transferApp "github.com/sekai-labs/kumokura/internal/transfers/application"
 	transferDomain "github.com/sekai-labs/kumokura/internal/transfers/domain"
 )
@@ -33,6 +36,8 @@ type Services struct {
 	BucketService   *bucketApp.BucketService
 	ObjectService   *objApp.ObjectService
 	TransferService *transferApp.TransferService
+	SyncService     syncPorts.SyncEngine
+	SyncRepo        syncPorts.SyncRepository
 }
 
 type Model struct {
@@ -51,29 +56,30 @@ type Model struct {
 
 	explorerView  views.ExplorerView
 	transfersView views.TransfersView
-	accountsView  views.AccountsView
+	syncView      views.SyncView
 	helpView      views.HelpView
 
 	activeAccount string
+	activeRegion  string
 	activeBucket  string
 
-	showHelpModal    bool
-	showDeleteModal  bool
-	deleteTargetKey  string
-	uploadModal      components.UploadModal
-	showPreviewModal bool
+	showHelpModal   bool
+	showDeleteModal bool
+	deleteTargetKey string
+	uploadModal     components.UploadModal
+	downloadModal   components.DownloadModal
+	presignModal    components.PresignModal
 
 	notification string
 }
 
 func NewModel(services Services) Model {
 	st := styles.NewStyles(styles.DarkTheme)
-
 	tabs := []components.TabItem{
-		{ID: "explorer", Title: "1: Explorer"},
-		{ID: "transfers", Title: "2: Transfers"},
-		{ID: "accounts", Title: "3: Accounts"},
-		{ID: "help", Title: "4: Help"},
+		{ID: "buckets", Title: "[1 Buckets]"},
+		{ID: "objects", Title: "[2 Objects]"},
+		{ID: "transfers", Title: "[3 Transfers]"},
+		{ID: "sync", Title: "[4 Sync]"},
 	}
 
 	return Model{
@@ -86,10 +92,12 @@ func NewModel(services Services) Model {
 		statusBar:     components.NewStatusBar(st),
 		searchBar:     components.NewSearchBar(st),
 		uploadModal:   components.NewUploadModal(st),
+		downloadModal: components.NewDownloadModal(st),
+		presignModal:  components.NewPresignModal(st),
 		activeTab:     0,
 		explorerView:  views.NewExplorerView(st),
 		transfersView: views.NewTransfersView(st),
-		accountsView:  views.NewAccountsView(st),
+		syncView:      views.NewSyncView(st),
 		helpView:      views.NewHelpView(st),
 	}
 }
@@ -112,8 +120,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case messages.AccountsLoadedMsg:
 		if msg.Err == nil && len(msg.Accounts) > 0 {
-			m.accountsView.Accounts = msg.Accounts
 			m.activeAccount = msg.Accounts[0].Name
+			m.activeRegion = msg.Accounts[0].Region
 		}
 
 	case messages.BucketsLoadedMsg:
@@ -121,6 +129,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.explorerView.Buckets = msg.Buckets
 			if len(msg.Buckets) > 0 && m.activeBucket == "" {
 				m.activeBucket = msg.Buckets[0].Name
+				m.explorerView.ActiveBucket = m.activeBucket
 				cmds = append(cmds, m.loadObjectsCmd(m.activeBucket, ""))
 			}
 		}
@@ -154,9 +163,47 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.loadObjectsCmd(m.activeBucket, m.explorerView.CurrentPrefix))
 		}
 
+	case messages.FolderUploadFinishedMsg:
+		if msg.Err != nil {
+			m.notification = fmt.Sprintf("Folder upload failed: %v", msg.Err)
+		} else {
+			m.notification = fmt.Sprintf("Uploaded %d objects (%s) to %s", msg.TotalCount, formatBytes(msg.TotalBytes), msg.Prefix)
+			cmds = append(cmds, m.loadObjectsCmd(m.activeBucket, m.explorerView.CurrentPrefix))
+		}
+
+	case messages.DownloadFinishedMsg:
+		if msg.Err != nil {
+			m.notification = fmt.Sprintf("Download failed: %v", msg.Err)
+		} else {
+			m.notification = fmt.Sprintf("Downloaded %s to %s", msg.Key, msg.Path)
+		}
+
+	case messages.FolderDownloadFinishedMsg:
+		if msg.Err != nil {
+			m.notification = fmt.Sprintf("Folder download failed: %v", msg.Err)
+		} else {
+			m.notification = fmt.Sprintf("Downloaded %d objects (%s) to %s", msg.TotalCount, formatBytes(msg.TotalBytes), msg.LocalDest)
+		}
+
+	case messages.PresignedURLGeneratedMsg:
+		if msg.Err != nil {
+			m.presignModal.ErrorText = fmt.Sprintf("Presign failed: %v", msg.Err)
+		} else {
+			m.presignModal.GeneratedURL = msg.URL
+			m.presignModal.Copied = msg.Copied
+			if msg.Copied {
+				m.notification = "Presigned URL copied to clipboard"
+			}
+		}
+
 	case messages.TransfersLoadedMsg:
 		if msg.Err == nil {
 			m.transfersView.Jobs = msg.Jobs
+		}
+
+	case messages.SyncJobsLoadedMsg:
+		if msg.Err == nil {
+			m.syncView.Jobs = msg.Jobs
 		}
 
 	case messages.StatusNotificationMsg:
@@ -174,6 +221,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "y", "Y", "enter":
 				m.showDeleteModal = false
 				cmds = append(cmds, m.deleteObjectCmd(m.activeBucket, m.deleteTargetKey))
+				return m, tea.Batch(cmds...)
 			case "n", "N", "esc":
 				m.showDeleteModal = false
 			}
@@ -188,15 +236,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case key.Matches(msg, m.keymap.Enter):
 				path := strings.TrimSpace(m.uploadModal.Input.Value())
 				if path == "" {
-					m.uploadModal.ErrorText = "Please specify a valid file path"
+					m.uploadModal.ErrorText = "Please specify a valid file or folder path"
 				} else {
 					fi, err := os.Stat(path)
 					if err != nil {
-						m.uploadModal.ErrorText = fmt.Sprintf("File not found: %s", filepath.Base(path))
+						m.uploadModal.ErrorText = fmt.Sprintf("Path not found: %s", filepath.Base(path))
 					} else if fi.IsDir() {
-						m.uploadModal.ErrorText = "Directories not supported. Please select a file"
+						m.uploadModal.Active = false
+						m.uploadModal.Input.Blur()
+						m.notification = fmt.Sprintf("Uploading folder %s...", filepath.Base(path))
+						cmds = append(cmds, m.uploadFolderCmd(m.activeBucket, m.explorerView.CurrentPrefix, path))
 					} else {
-						// Valid file!
 						m.uploadModal.Active = false
 						m.uploadModal.Input.Blur()
 						targetKey := m.uploadModal.TargetKey
@@ -210,6 +260,58 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			default:
 				var tiCmd tea.Cmd
 				m.uploadModal.Input, tiCmd = m.uploadModal.Input.Update(msg)
+				cmds = append(cmds, tiCmd)
+			}
+			return m, tea.Batch(cmds...)
+		}
+
+		if m.downloadModal.Active {
+			switch {
+			case key.Matches(msg, m.keymap.Escape):
+				m.downloadModal.Active = false
+				m.downloadModal.Input.Blur()
+			case key.Matches(msg, m.keymap.Enter):
+				destDir := strings.TrimSpace(m.downloadModal.Input.Value())
+				if destDir == "" {
+					destDir = "."
+				}
+				m.downloadModal.Active = false
+				m.downloadModal.Input.Blur()
+
+				if m.downloadModal.IsFolder {
+					m.notification = fmt.Sprintf("Downloading folder %s to %s...", m.downloadModal.TargetName, destDir)
+					cmds = append(cmds, m.downloadFolderCmd(m.activeBucket, m.downloadModal.TargetName, destDir))
+				} else {
+					m.notification = fmt.Sprintf("Downloading %s to %s...", filepath.Base(m.downloadModal.TargetName), destDir)
+					cmds = append(cmds, m.downloadObjectCmd(m.activeBucket, m.downloadModal.TargetName, destDir))
+				}
+			default:
+				var tiCmd tea.Cmd
+				m.downloadModal.Input, tiCmd = m.downloadModal.Input.Update(msg)
+				cmds = append(cmds, tiCmd)
+			}
+			return m, tea.Batch(cmds...)
+		}
+
+		if m.presignModal.Active {
+			switch {
+			case key.Matches(msg, m.keymap.Escape) || (m.presignModal.GeneratedURL != "" && key.Matches(msg, m.keymap.Enter)):
+				m.presignModal.Active = false
+				m.presignModal.Input.Blur()
+			case key.Matches(msg, m.keymap.Enter):
+				durStr := strings.TrimSpace(m.presignModal.Input.Value())
+				if durStr == "" {
+					durStr = "60m"
+				}
+				dur, err := time.ParseDuration(durStr)
+				if err != nil {
+					m.presignModal.ErrorText = "Invalid duration (e.g. 15m, 1h, 24h)"
+				} else {
+					cmds = append(cmds, m.generatePresignedURLCmd(m.activeBucket, m.presignModal.ObjectKey, dur))
+				}
+			default:
+				var tiCmd tea.Cmd
+				m.presignModal.Input, tiCmd = m.presignModal.Input.Update(msg)
 				cmds = append(cmds, tiCmd)
 			}
 			return m, tea.Batch(cmds...)
@@ -251,7 +353,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keymap.ShiftTab):
 			m.explorerView.ActivePaneIndex = (m.explorerView.ActivePaneIndex + 2) % 3
 
-		case key.Matches(msg, m.keymap.ToggleDetail):
+		case key.Matches(msg, m.keymap.Inspector), key.Matches(msg, m.keymap.ToggleDetail):
 			m.explorerView.ShowPreview = !m.explorerView.ShowPreview
 
 		case key.Matches(msg, m.keymap.Refresh):
@@ -259,21 +361,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.activeBucket != "" {
 				cmds = append(cmds, m.loadObjectsCmd(m.activeBucket, m.explorerView.CurrentPrefix))
 			}
+			if m.activeTab == 2 {
+				cmds = append(cmds, m.loadTransfersCmd())
+			} else if m.activeTab == 3 {
+				cmds = append(cmds, m.loadSyncJobsCmd())
+			}
 
 		case msg.String() == "1":
 			m.activeTab = 0
 			m.tabBar.Active = 0
+			m.explorerView.ActivePaneIndex = 0
 		case msg.String() == "2":
 			m.activeTab = 1
 			m.tabBar.Active = 1
-			cmds = append(cmds, m.loadTransfersCmd())
+			m.explorerView.ActivePaneIndex = 1
 		case msg.String() == "3":
 			m.activeTab = 2
 			m.tabBar.Active = 2
+			cmds = append(cmds, m.loadTransfersCmd())
 		case msg.String() == "4":
 			m.activeTab = 3
 			m.tabBar.Active = 3
-
+			cmds = append(cmds, m.loadSyncJobsCmd())
 		default:
 			if m.activeTab == 0 {
 				m, cmds = m.handleExplorerKeys(msg, cmds)
@@ -349,6 +458,7 @@ func (m Model) handleExplorerKeys(msg tea.KeyMsg, cmds []tea.Cmd) (Model, []tea.
 		if m.explorerView.ActivePaneIndex == 0 {
 			if len(m.explorerView.Buckets) > m.explorerView.SelectedBucket {
 				m.activeBucket = m.explorerView.Buckets[m.explorerView.SelectedBucket].Name
+				m.explorerView.ActiveBucket = m.activeBucket
 				m.explorerView.CurrentPrefix = ""
 				m.explorerView.ActivePaneIndex = 1
 				cmds = append(cmds, m.loadObjectsCmd(m.activeBucket, ""))
@@ -393,13 +503,61 @@ func (m Model) handleExplorerKeys(msg tea.KeyMsg, cmds []tea.Cmd) (Model, []tea.
 			m.uploadModal.Input.SetValue("")
 			m.uploadModal.Input.Focus()
 		}
+
+	case key.Matches(msg, m.keymap.Download):
+		if m.activeBucket == "" {
+			m.notification = "Select a bucket before downloading"
+		} else {
+			prefixLen := len(m.explorerView.Prefixes)
+			if m.explorerView.SelectedObject < prefixLen {
+				targetFolder := m.explorerView.Prefixes[m.explorerView.SelectedObject].Prefix
+				m.downloadModal.Active = true
+				m.downloadModal.TargetName = targetFolder
+				m.downloadModal.IsFolder = true
+				m.downloadModal.ErrorText = ""
+				m.downloadModal.Input.SetValue("./")
+				m.downloadModal.Input.Focus()
+			} else {
+				objIdx := m.explorerView.SelectedObject - prefixLen
+				if objIdx < len(m.explorerView.Objects) {
+					targetKey := m.explorerView.Objects[objIdx].Key
+					m.downloadModal.Active = true
+					m.downloadModal.TargetName = targetKey
+					m.downloadModal.IsFolder = false
+					m.downloadModal.ErrorText = ""
+					m.downloadModal.Input.SetValue("./")
+					m.downloadModal.Input.Focus()
+				}
+			}
+		}
+
+	case key.Matches(msg, m.keymap.Presign):
+		if m.activeBucket == "" {
+			m.notification = "Select a bucket before generating presigned URL"
+		} else {
+			prefixLen := len(m.explorerView.Prefixes)
+			if m.explorerView.SelectedObject >= prefixLen {
+				objIdx := m.explorerView.SelectedObject - prefixLen
+				if objIdx < len(m.explorerView.Objects) {
+					targetKey := m.explorerView.Objects[objIdx].Key
+					m.presignModal.Active = true
+					m.presignModal.ObjectKey = targetKey
+					m.presignModal.GeneratedURL = ""
+					m.presignModal.ErrorText = ""
+					m.presignModal.Input.SetValue("60m")
+					m.presignModal.Input.Focus()
+				}
+			} else {
+				m.notification = "Presigned URL is only applicable to objects"
+			}
+		}
 	}
 
 	return m, cmds
 }
 
 func (m Model) View() string {
-	topBar := m.tabBar.Render(m.width, m.activeAccount, m.activeBucket)
+	topBar := m.tabBar.Render(m.width, m.activeAccount, m.activeRegion, m.activeBucket)
 
 	availableHeight := m.height - 4
 	if availableHeight < 10 {
@@ -408,14 +566,12 @@ func (m Model) View() string {
 
 	var body string
 	switch m.activeTab {
-	case 0:
+	case 0, 1:
 		body = m.explorerView.Render(m.width, availableHeight)
-	case 1:
-		body = m.transfersView.Render(m.width, availableHeight)
 	case 2:
-		body = m.accountsView.Render(m.width, availableHeight)
+		body = m.transfersView.Render(m.width, availableHeight)
 	case 3:
-		body = m.helpView.Render(m.width, availableHeight)
+		body = m.syncView.Render(m.width, availableHeight)
 	}
 
 	filterBar := ""
@@ -423,7 +579,7 @@ func (m Model) View() string {
 		filterBar = m.searchBar.Render(m.width)
 	}
 
-	helpKeys := []string{"[j/k] Navigate", "[Enter] Open", "[Tab] Switch Pane", "[/] Filter", "[u] Upload", "[p] Preview", "[?] Help", "[q] Quit"}
+	helpKeys := []string{"[Tab] Switch Pane", "[j/k] Navigate", "[/] Filter", "[u] Upload", "[d] Download", "[?] Help"}
 	bottomBar := m.statusBar.Render(m.width, helpKeys, 0, 0, m.notification)
 
 	parts := []string{topBar}
@@ -436,6 +592,14 @@ func (m Model) View() string {
 
 	if m.uploadModal.Active {
 		return m.uploadModal.Render(m.width, m.height)
+	}
+
+	if m.downloadModal.Active {
+		return m.downloadModal.Render(m.width, m.height)
+	}
+
+	if m.presignModal.Active {
+		return m.presignModal.Render(m.width, m.height)
 	}
 
 	if m.showHelpModal {
@@ -543,7 +707,6 @@ func (m Model) loadObjectContentCmd(bucket, key string) tea.Cmd {
 		}
 		defer obj.Body.Close()
 
-		// Read up to 4KB for preview
 		buf := make([]byte, 4096)
 		n, _ := io.ReadFull(obj.Body, buf)
 		return messages.ContentPreviewLoadedMsg{
@@ -582,7 +745,6 @@ func (m Model) uploadObjectCmd(bucket, key, localPath string) tea.Cmd {
 			}
 		}
 
-		// Construct full object key if prefix is set and not already part of key
 		fullKey := key
 		if m.explorerView.CurrentPrefix != "" && !strings.HasPrefix(fullKey, m.explorerView.CurrentPrefix) {
 			fullKey = filepath.ToSlash(filepath.Join(m.explorerView.CurrentPrefix, key))
@@ -643,4 +805,327 @@ func (m Model) filterObjectsCmd(pattern string) tea.Cmd {
 		}
 		return nil
 	}
+}
+
+func (m Model) uploadFolderCmd(bucket, prefix, localDirPath string) tea.Cmd {
+	return func() tea.Msg {
+		if m.services.ObjectService == nil {
+			return messages.FolderUploadFinishedMsg{
+				Bucket: bucket,
+				Prefix: prefix,
+				Err:    fmt.Errorf("object service unavailable"),
+			}
+		}
+
+		cleanDir := filepath.Clean(localDirPath)
+		var totalCount int
+		var totalBytes int64
+		var failedCount int
+
+		err := filepath.Walk(cleanDir, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				failedCount++
+				return nil
+			}
+			if info.IsDir() {
+				return nil
+			}
+
+			relPath, err := filepath.Rel(cleanDir, path)
+			if err != nil {
+				failedCount++
+				return nil
+			}
+
+			targetKey := filepath.ToSlash(relPath)
+			if prefix != "" {
+				targetKey = filepath.ToSlash(filepath.Join(prefix, targetKey))
+			}
+
+			f, err := os.Open(path)
+			if err != nil {
+				failedCount++
+				return nil
+			}
+			defer f.Close()
+
+			meta := objDomain.ObjectMetadata{
+				ContentType:   "application/octet-stream",
+				ContentLength: info.Size(),
+			}
+
+			if m.services.TransferService != nil {
+				job := transferDomain.TransferJob{
+					ID:              fmt.Sprintf("up-%d", time.Now().UnixNano()),
+					AccountID:       m.activeAccount,
+					Type:            transferDomain.TransferTypeUpload,
+					SourcePath:      path,
+					DestinationPath: fmt.Sprintf("s3://%s/%s", bucket, targetKey),
+					Bucket:          bucket,
+					Key:             targetKey,
+					TotalBytes:      info.Size(),
+					Status:          transferDomain.JobStatusPending,
+				}
+				_, _ = m.services.TransferService.SubmitJob(context.Background(), job)
+			}
+
+			_, putErr := m.services.ObjectService.PutObject(context.Background(), bucket, targetKey, f, info.Size(), meta)
+			if putErr != nil {
+				failedCount++
+				return nil
+			}
+
+			totalCount++
+			totalBytes += info.Size()
+			return nil
+		})
+
+		return messages.FolderUploadFinishedMsg{
+			Bucket:      bucket,
+			Prefix:      prefix,
+			TotalCount:  totalCount,
+			TotalBytes:  totalBytes,
+			FailedCount: failedCount,
+			Err:         err,
+		}
+	}
+}
+
+func (m Model) downloadObjectCmd(bucket, key, localDestDir string) tea.Cmd {
+	return func() tea.Msg {
+		if m.services.ObjectService == nil {
+			return messages.DownloadFinishedMsg{
+				Bucket: bucket,
+				Key:    key,
+				Err:    fmt.Errorf("object service unavailable"),
+			}
+		}
+
+		if err := os.MkdirAll(localDestDir, 0755); err != nil {
+			return messages.DownloadFinishedMsg{
+				Bucket: bucket,
+				Key:    key,
+				Err:    err,
+			}
+		}
+
+		fileName := filepath.Base(key)
+		destPath := filepath.Join(localDestDir, fileName)
+
+		content, err := m.services.ObjectService.GetObject(context.Background(), bucket, key, "")
+		if err != nil {
+			return messages.DownloadFinishedMsg{
+				Bucket: bucket,
+				Key:    key,
+				Err:    err,
+			}
+		}
+		defer content.Body.Close()
+
+		outFile, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+		if err != nil {
+			return messages.DownloadFinishedMsg{
+				Bucket: bucket,
+				Key:    key,
+				Err:    err,
+			}
+		}
+		defer outFile.Close()
+
+		n, err := io.Copy(outFile, content.Body)
+		if err != nil {
+			return messages.DownloadFinishedMsg{
+				Bucket: bucket,
+				Key:    key,
+				Err:    err,
+			}
+		}
+
+		if m.services.TransferService != nil {
+			job := transferDomain.TransferJob{
+				ID:               fmt.Sprintf("dl-%d", time.Now().UnixNano()),
+				AccountID:        m.activeAccount,
+				Type:             transferDomain.TransferTypeDownload,
+				SourcePath:       fmt.Sprintf("s3://%s/%s", bucket, key),
+				DestinationPath:  destPath,
+				Bucket:           bucket,
+				Key:              key,
+				TotalBytes:       n,
+				BytesTransferred: n,
+				Status:           transferDomain.JobStatusCompleted,
+			}
+			_, _ = m.services.TransferService.SubmitJob(context.Background(), job)
+		}
+
+		return messages.DownloadFinishedMsg{
+			Bucket: bucket,
+			Key:    key,
+			Path:   destPath,
+			Err:    nil,
+		}
+	}
+}
+
+func (m Model) downloadFolderCmd(bucket, prefix, localDestDir string) tea.Cmd {
+	return func() tea.Msg {
+		if m.services.ObjectService == nil {
+			return messages.FolderDownloadFinishedMsg{
+				Bucket:    bucket,
+				Prefix:    prefix,
+				LocalDest: localDestDir,
+				Err:       fmt.Errorf("object service unavailable"),
+			}
+		}
+
+		var totalCount int
+		var totalBytes int64
+		var failedCount int
+
+		var continuationToken string
+		for {
+			res, err := m.services.ObjectService.ListObjects(context.Background(), bucket, objDomain.ObjectFilter{
+				Prefix:       prefix,
+				MaxKeys:      1000,
+				Continuation: continuationToken,
+			})
+			if err != nil {
+				return messages.FolderDownloadFinishedMsg{
+					Bucket:      bucket,
+					Prefix:      prefix,
+					LocalDest:   localDestDir,
+					TotalCount:  totalCount,
+					TotalBytes:  totalBytes,
+					FailedCount: failedCount,
+					Err:         err,
+				}
+			}
+
+			for _, obj := range res.Objects {
+				relKey := strings.TrimPrefix(obj.Key, prefix)
+				relKey = strings.TrimPrefix(relKey, "/")
+				if relKey == "" {
+					continue
+				}
+
+				targetFilePath := filepath.Join(localDestDir, filepath.FromSlash(relKey))
+				if err := os.MkdirAll(filepath.Dir(targetFilePath), 0755); err != nil {
+					failedCount++
+					continue
+				}
+
+				content, err := m.services.ObjectService.GetObject(context.Background(), bucket, obj.Key, "")
+				if err != nil {
+					failedCount++
+					continue
+				}
+
+				outFile, err := os.OpenFile(targetFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+				if err != nil {
+					content.Body.Close()
+					failedCount++
+					continue
+				}
+
+				written, copyErr := io.Copy(outFile, content.Body)
+				content.Body.Close()
+				outFile.Close()
+
+				if copyErr != nil {
+					failedCount++
+					continue
+				}
+
+				totalCount++
+				totalBytes += written
+
+				if m.services.TransferService != nil {
+					job := transferDomain.TransferJob{
+						ID:               fmt.Sprintf("dl-%d", time.Now().UnixNano()),
+						AccountID:        m.activeAccount,
+						Type:             transferDomain.TransferTypeDownload,
+						SourcePath:       fmt.Sprintf("s3://%s/%s", bucket, obj.Key),
+						DestinationPath:  targetFilePath,
+						Bucket:           bucket,
+						Key:              obj.Key,
+						TotalBytes:       written,
+						BytesTransferred: written,
+						Status:           transferDomain.JobStatusCompleted,
+					}
+					_, _ = m.services.TransferService.SubmitJob(context.Background(), job)
+				}
+			}
+
+			if !res.IsTruncated || res.NextContinuationToken == "" {
+				break
+			}
+			continuationToken = res.NextContinuationToken
+		}
+
+		return messages.FolderDownloadFinishedMsg{
+			Bucket:      bucket,
+			Prefix:      prefix,
+			LocalDest:   localDestDir,
+			TotalCount:  totalCount,
+			TotalBytes:  totalBytes,
+			FailedCount: failedCount,
+			Err:         nil,
+		}
+	}
+}
+
+func (m Model) generatePresignedURLCmd(bucket, key string, expiry time.Duration) tea.Cmd {
+	return func() tea.Msg {
+		if m.services.ObjectService == nil {
+			return messages.PresignedURLGeneratedMsg{
+				Key: key,
+				Err: fmt.Errorf("object service unavailable"),
+			}
+		}
+
+		pURL, err := m.services.ObjectService.GeneratePresignedURL(context.Background(), bucket, key, "GET", expiry)
+		if err != nil {
+			return messages.PresignedURLGeneratedMsg{
+				Key: key,
+				Err: err,
+			}
+		}
+
+		seq := osc52.New(pURL.URL)
+		fmt.Fprint(os.Stderr, seq)
+
+		return messages.PresignedURLGeneratedMsg{
+			URL:    pURL.URL,
+			Key:    key,
+			Copied: true,
+			Err:    nil,
+		}
+	}
+}
+
+func (m Model) loadSyncJobsCmd() tea.Cmd {
+	return func() tea.Msg {
+		if m.services.SyncRepo == nil {
+			return messages.SyncJobsLoadedMsg{
+				Jobs: []*syncPorts.SyncJobRecord{},
+			}
+		}
+		jobs, err := m.services.SyncRepo.ListJobs(context.Background(), m.activeAccount)
+		return messages.SyncJobsLoadedMsg{
+			Jobs: jobs,
+			Err:  err,
+		}
+	}
+}
+
+func formatBytes(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }

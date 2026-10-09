@@ -3,6 +3,12 @@ package desktop
 import (
 	"context"
 	"fmt"
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/theme"
+	"fyne.io/fyne/v2/widget"
 	"io"
 	"os"
 	"path/filepath"
@@ -10,12 +16,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/app"
-	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/dialog"
-	"fyne.io/fyne/v2/theme"
-	"fyne.io/fyne/v2/widget"
 
 	accountDomain "github.com/sekai-labs/kumokura/internal/accounts/domain"
 	accountPorts "github.com/sekai-labs/kumokura/internal/accounts/ports"
@@ -38,14 +38,17 @@ type DesktopApp struct {
 	buckets        []bucketDomain.Bucket
 	selectedBucket string
 
+	prefixes        []objectDomain.Prefix
 	objects         []objectDomain.Object
 	filteredObjects []objectDomain.Object
 	selectedObject  *objectDomain.Object
 
-	currentPrefix string
-	searchQuery   string
-
-	jobs []transferDomain.TransferJob
+	currentPrefix    string
+	flatMode         bool
+	searchQuery      string
+	lastSelectedRow  int
+	lastSelectedTime time.Time
+	jobs             []transferDomain.TransferJob
 
 	accountSelect *widget.Select
 	bucketBadge   *widget.Label
@@ -54,15 +57,19 @@ type DesktopApp struct {
 	accountList *widget.List
 	bucketList  *widget.List
 
-	objectTable       *widget.Table
-	emptyStateCard    *widget.Card
-	loadingContainer  *fyne.Container
-	loadingBar        *widget.ProgressBarInfinite
-	loadingLabel      *widget.Label
-	centerContainer   *fyne.Container
+	objectTable      *widget.Table
+	emptyStateCard   *widget.Card
+	loadingContainer *fyne.Container
+	loadingBar       *widget.ProgressBarInfinite
+	loadingLabel     *widget.Label
+	centerContainer  *fyne.Container
 
-	loadCancel context.CancelFunc
-	loadSeq    uint64
+	prefixNavLabel *widget.Label
+	upFolderBtn    *widget.Button
+	viewModeSelect *widget.Select
+	openFolderBtn  *widget.Button
+	loadCancel     context.CancelFunc
+	loadSeq        uint64
 
 	detailsCard    *widget.Card
 	metadataLabel  *widget.Label
@@ -281,7 +288,21 @@ func (d *DesktopApp) buildCenterPanel() fyne.CanvasObject {
 	deleteBtn := widget.NewButtonWithIcon("Delete", theme.DeleteIcon(), func() {
 		d.deleteSelectedObject()
 	})
+
+	d.openFolderBtn = widget.NewButtonWithIcon("Open Folder", theme.FolderOpenIcon(), func() {
+		d.openSelectedFolder()
+	})
+	d.openFolderBtn.Disable()
+
+	d.viewModeSelect = widget.NewSelect([]string{"Hierarchical (Folders)", "Flat (All Keys)"}, func(selected string) {
+		d.setViewMode(selected == "Flat (All Keys)")
+	})
+	d.viewModeSelect.SetSelected("Hierarchical (Folders)")
+
 	actionsBar := container.NewHBox(
+		d.viewModeSelect,
+		widget.NewSeparator(),
+		d.openFolderBtn,
 		uploadFileBtn,
 		uploadFolderBtn,
 		previewTopBtn,
@@ -296,6 +317,27 @@ func (d *DesktopApp) buildCenterPanel() fyne.CanvasObject {
 		actionsBar,
 	)
 
+	d.upFolderBtn = widget.NewButtonWithIcon("Up / Parent", theme.NavigateBackIcon(), func() {
+		d.navigateUp()
+	})
+	d.upFolderBtn.Disable()
+
+	d.prefixNavLabel = widget.NewLabel("Prefix: /")
+	d.prefixNavLabel.TextStyle = fyne.TextStyle{Monospace: true}
+	d.prefixNavLabel.Truncation = fyne.TextTruncateEllipsis
+
+	navBar := container.NewBorder(
+		nil,
+		nil,
+		d.upFolderBtn,
+		nil,
+		d.prefixNavLabel,
+	)
+
+	topControls := container.NewVBox(
+		tableHeader,
+		navBar,
+	)
 	d.objectTable = widget.NewTable(
 		func() (int, int) {
 			d.mu.RLock()
@@ -335,13 +377,29 @@ func (d *DesktopApp) buildCenterPanel() fyne.CanvasObject {
 			obj := d.filteredObjects[idx]
 			switch id.Col {
 			case 0:
-				lbl.SetText(obj.Key)
+				if obj.IsPrefix {
+					lbl.SetText("[DIR] " + obj.Key)
+				} else {
+					lbl.SetText(obj.Key)
+				}
 			case 1:
-				lbl.SetText(formatBytes(obj.Size))
+				if obj.IsPrefix {
+					lbl.SetText("-")
+				} else {
+					lbl.SetText(formatBytes(obj.Size))
+				}
 			case 2:
-				lbl.SetText(string(obj.StorageClass))
+				if obj.IsPrefix {
+					lbl.SetText("Directory")
+				} else {
+					lbl.SetText(string(obj.StorageClass))
+				}
 			case 3:
-				lbl.SetText(obj.LastModified.Format("2006-01-02 15:04:05"))
+				if obj.IsPrefix {
+					lbl.SetText("-")
+				} else {
+					lbl.SetText(obj.LastModified.Format("2006-01-02 15:04:05"))
+				}
 			}
 		},
 	)
@@ -355,15 +413,7 @@ func (d *DesktopApp) buildCenterPanel() fyne.CanvasObject {
 		if id.Row == 0 {
 			return
 		}
-		d.mu.RLock()
-		idx := id.Row - 1
-		if idx >= 0 && idx < len(d.filteredObjects) {
-			obj := d.filteredObjects[idx]
-			d.mu.RUnlock()
-			d.selectObject(&obj)
-		} else {
-			d.mu.RUnlock()
-		}
+		d.handleTableRowSelected(id.Row - 1)
 	}
 
 	d.loadingBar = widget.NewProgressBarInfinite()
@@ -402,7 +452,7 @@ func (d *DesktopApp) buildCenterPanel() fyne.CanvasObject {
 		d.loadingContainer,
 	)
 
-	return container.NewBorder(tableHeader, nil, nil, nil, d.centerContainer)
+	return container.NewBorder(topControls, nil, nil, nil, d.centerContainer)
 }
 
 func (d *DesktopApp) buildRightPanel() fyne.CanvasObject {
@@ -551,11 +601,14 @@ func (d *DesktopApp) selectAccount(acc *accountDomain.Account) {
 	d.selectedAccount = acc
 	d.buckets = nil
 	d.selectedBucket = ""
+	d.prefixes = nil
 	d.objects = nil
 	d.filteredObjects = nil
 	d.selectedObject = nil
+	d.currentPrefix = ""
 	d.mu.Unlock()
 
+	d.updatePrefixNavUI()
 	if d.accountSelect.Selected != acc.Name {
 		d.accountSelect.SetSelected(acc.Name)
 	}
@@ -603,11 +656,14 @@ func (d *DesktopApp) selectBucket(name string) {
 	d.mu.Lock()
 	d.selectedBucket = name
 	d.bucketBadge.SetText(name)
+	d.prefixes = nil
 	d.objects = nil
 	d.filteredObjects = nil
 	d.selectedObject = nil
+	d.currentPrefix = ""
 	d.mu.Unlock()
 
+	d.updatePrefixNavUI()
 	d.selectObject(nil)
 	d.loadObjects()
 }
@@ -624,8 +680,10 @@ func (d *DesktopApp) loadObjects() {
 	acc := d.selectedAccount
 	bucket := d.selectedBucket
 	prefix := d.currentPrefix
+	isFlat := d.flatMode
 
 	if acc == nil || bucket == "" {
+		d.prefixes = nil
 		d.objects = nil
 		d.filteredObjects = nil
 		d.mu.Unlock()
@@ -661,9 +719,15 @@ func (d *DesktopApp) loadObjects() {
 		}
 
 		var allObjects []objectDomain.Object
+		var allPrefixes []objectDomain.Prefix
 		continuation := ""
 		const maxBatchKeys = 1000
 		const maxTotalKeys = 50000
+
+		delimiter := "/"
+		if isFlat {
+			delimiter = ""
+		}
 
 		for {
 			if ctx.Err() != nil {
@@ -672,7 +736,7 @@ func (d *DesktopApp) loadObjects() {
 
 			res, err := oService.ListObjects(ctx, bucket, objectDomain.ObjectFilter{
 				Prefix:       prefix,
-				Delimiter:    "/",
+				Delimiter:    delimiter,
 				MaxKeys:      maxBatchKeys,
 				Continuation: continuation,
 			})
@@ -687,22 +751,24 @@ func (d *DesktopApp) loadObjects() {
 						return
 					}
 					d.mu.Unlock()
-					d.updateTableViewState(false, len(allObjects))
+					d.updateTableViewState(false, len(allObjects)+len(allPrefixes))
 					dialog.ShowError(err, d.window)
 				})
 				return
 			}
 
 			allObjects = append(allObjects, res.Objects...)
+			if !isFlat && len(res.CommonPrefixes) > 0 {
+				allPrefixes = append(allPrefixes, res.CommonPrefixes...)
+			}
 
-			// Update loading label with count progress if paginating
-			loadedCount := len(allObjects)
+			loadedCount := len(allObjects) + len(allPrefixes)
 			if res.IsTruncated && res.NextContinuationToken != "" && loadedCount < maxTotalKeys {
 				continuation = res.NextContinuationToken
 				fyne.Do(func() {
 					d.mu.Lock()
 					if d.loadSeq == currentSeq && d.loadingLabel != nil {
-						d.loadingLabel.SetText(fmt.Sprintf("Loading objects (%d loaded)...", loadedCount))
+						d.loadingLabel.SetText(fmt.Sprintf("Loading items (%d loaded)...", loadedCount))
 					}
 					d.mu.Unlock()
 				})
@@ -717,11 +783,13 @@ func (d *DesktopApp) loadObjects() {
 				d.mu.Unlock()
 				return
 			}
+			d.prefixes = allPrefixes
 			d.objects = allObjects
 			d.applyFilterLocked()
 			totalFiltered := len(d.filteredObjects)
 			d.mu.Unlock()
 
+			d.updatePrefixNavUI()
 			d.updateTableViewState(false, totalFiltered)
 		})
 	}()
@@ -769,24 +837,161 @@ func (d *DesktopApp) onSearchChanged(query string) {
 }
 
 func (d *DesktopApp) applyFilterLocked() {
+	var combined []objectDomain.Object
+
+	for _, p := range d.prefixes {
+		combined = append(combined, objectDomain.Object{
+			Bucket:   p.Bucket,
+			Key:      p.Prefix,
+			IsPrefix: true,
+		})
+	}
+	combined = append(combined, d.objects...)
+
 	if d.searchQuery == "" {
-		d.filteredObjects = d.objects
+		d.filteredObjects = combined
 		return
 	}
 
 	filtered := make([]objectDomain.Object, 0)
-	for _, obj := range d.objects {
-		if strings.Contains(strings.ToLower(obj.Key), d.searchQuery) {
-			filtered = append(filtered, obj)
+	for _, item := range combined {
+		if strings.Contains(strings.ToLower(item.Key), d.searchQuery) {
+			filtered = append(filtered, item)
 		}
 	}
 	d.filteredObjects = filtered
+}
+func (d *DesktopApp) updatePrefixNavUI() {
+	d.mu.RLock()
+	prefix := d.currentPrefix
+	isFlat := d.flatMode
+	d.mu.RUnlock()
+
+	if d.prefixNavLabel != nil {
+		if isFlat {
+			d.prefixNavLabel.SetText("Prefix: (Flat listing - Delimiter disabled)")
+		} else if prefix == "" {
+			d.prefixNavLabel.SetText("Prefix: / (root)")
+		} else {
+			d.prefixNavLabel.SetText(fmt.Sprintf("Prefix: /%s", prefix))
+		}
+	}
+
+	if d.upFolderBtn != nil {
+		if !isFlat && prefix != "" {
+			d.upFolderBtn.Enable()
+		} else {
+			d.upFolderBtn.Disable()
+		}
+	}
+}
+
+func (d *DesktopApp) navigateToPrefix(prefix string) {
+	d.mu.Lock()
+	d.currentPrefix = prefix
+	d.prefixes = nil
+	d.objects = nil
+	d.filteredObjects = nil
+	d.selectedObject = nil
+	d.mu.Unlock()
+
+	d.updatePrefixNavUI()
+	d.selectObject(nil)
+	d.loadObjects()
+}
+
+func (d *DesktopApp) navigateUp() {
+	d.mu.RLock()
+	prefix := d.currentPrefix
+	isFlat := d.flatMode
+	d.mu.RUnlock()
+
+	if isFlat || prefix == "" {
+		return
+	}
+
+	trimmed := strings.TrimSuffix(prefix, "/")
+	lastSlash := strings.LastIndex(trimmed, "/")
+	parent := ""
+	if lastSlash >= 0 {
+		parent = trimmed[:lastSlash+1]
+	}
+
+	d.navigateToPrefix(parent)
+}
+
+func (d *DesktopApp) openSelectedFolder() {
+	d.mu.RLock()
+	selected := d.selectedObject
+	d.mu.RUnlock()
+
+	if selected == nil || !selected.IsPrefix {
+		return
+	}
+
+	target := selected.Key
+	if !strings.HasSuffix(target, "/") {
+		target += "/"
+	}
+
+	d.navigateToPrefix(target)
+}
+
+func (d *DesktopApp) setViewMode(flat bool) {
+	d.mu.Lock()
+	if d.flatMode == flat {
+		d.mu.Unlock()
+		return
+	}
+	d.flatMode = flat
+	d.prefixes = nil
+	d.objects = nil
+	d.filteredObjects = nil
+	d.selectedObject = nil
+	d.mu.Unlock()
+
+	d.updatePrefixNavUI()
+	d.selectObject(nil)
+	d.loadObjects()
+}
+
+func (d *DesktopApp) handleTableRowSelected(idx int) {
+	d.mu.Lock()
+	if idx < 0 || idx >= len(d.filteredObjects) {
+		d.mu.Unlock()
+		return
+	}
+
+	obj := d.filteredObjects[idx]
+	now := time.Now()
+	isDoubleClick := (d.lastSelectedRow == idx) && (now.Sub(d.lastSelectedTime) < 500*time.Millisecond)
+	d.lastSelectedRow = idx
+	d.lastSelectedTime = now
+	d.mu.Unlock()
+
+	d.selectObject(&obj)
+
+	if isDoubleClick {
+		if obj.IsPrefix {
+			d.openSelectedFolder()
+		} else {
+			d.previewSelectedObject()
+		}
+	}
 }
 
 func (d *DesktopApp) selectObject(obj *objectDomain.Object) {
 	d.mu.Lock()
 	d.selectedObject = obj
 	d.mu.Unlock()
+
+	if d.openFolderBtn != nil {
+		if obj != nil && obj.IsPrefix {
+			d.openFolderBtn.Enable()
+		} else {
+			d.openFolderBtn.Disable()
+		}
+	}
 
 	if obj == nil {
 		if d.metadataLabel != nil {
@@ -800,6 +1005,25 @@ func (d *DesktopApp) selectObject(obj *objectDomain.Object) {
 		}
 		if d.previewStatusLabel != nil {
 			d.previewStatusLabel.SetText("Click 'Preview Object' or double-click to view content.")
+		}
+		if d.previewContentEntry != nil {
+			d.previewContentEntry.SetText("")
+		}
+		return
+	}
+
+	if obj.IsPrefix {
+		if d.metadataLabel != nil {
+			d.metadataLabel.SetText(fmt.Sprintf("Directory: %s\nType: Virtual Common Prefix / Directory\nClick 'Open Folder' or double-click to navigate inside.", obj.Key))
+		}
+		if d.presignedLabel != nil {
+			d.presignedLabel.SetText("")
+		}
+		if d.tagsLabel != nil {
+			d.tagsLabel.SetText("Tags: None (Directory)")
+		}
+		if d.previewStatusLabel != nil {
+			d.previewStatusLabel.SetText("Directory: open folder to explore contents.")
 		}
 		if d.previewContentEntry != nil {
 			d.previewContentEntry.SetText("")
@@ -932,11 +1156,15 @@ func (d *DesktopApp) previewSelectedObject() {
 		return
 	}
 
+	if obj.IsPrefix {
+		d.openSelectedFolder()
+		return
+	}
+
 	key := obj.Key
 	if d.previewStatusLabel != nil {
 		d.previewStatusLabel.SetText("Fetching preview...")
 	}
-
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
@@ -1050,7 +1278,6 @@ func (d *DesktopApp) showPreviewDialog(key, statusDesc, previewText string) {
 	dModal.Show()
 }
 
-
 func (d *DesktopApp) generatePresignedURL() {
 	d.mu.RLock()
 	acc := d.selectedAccount
@@ -1060,6 +1287,11 @@ func (d *DesktopApp) generatePresignedURL() {
 
 	if acc == nil || bucket == "" || obj == nil {
 		dialog.ShowInformation("No Object", "Please select an object first.", d.window)
+		return
+	}
+
+	if obj.IsPrefix {
+		dialog.ShowInformation("Directory", "Presigned URLs cannot be generated for directories.", d.window)
 		return
 	}
 
@@ -1102,7 +1334,11 @@ func (d *DesktopApp) showUploadDialog() {
 
 		filePath := reader.URI().Path()
 		key := filepath.Base(filePath)
-
+		d.mu.RLock()
+		if d.currentPrefix != "" && !d.flatMode {
+			key = d.currentPrefix + key
+		}
+		d.mu.RUnlock()
 		go func() {
 			ctx := context.Background()
 			oService, err := d.container.CreateObjectService(ctx, acc.Name)
@@ -1190,7 +1426,11 @@ func (d *DesktopApp) showUploadFolderDialog() {
 					continue
 				}
 				key := filepath.ToSlash(rel)
-
+				d.mu.RLock()
+				if d.currentPrefix != "" && !d.flatMode {
+					key = d.currentPrefix + key
+				}
+				d.mu.RUnlock()
 				sem <- struct{}{}
 				wg.Add(1)
 				go func(fPath, objKey string) {
@@ -1259,6 +1499,11 @@ func (d *DesktopApp) downloadSelectedObject() {
 		return
 	}
 
+	if obj.IsPrefix {
+		dialog.ShowInformation("Directory", "Cannot download a directory directly. Please open it to download individual files.", d.window)
+		return
+	}
+
 	dialog.ShowFileSave(func(writer fyne.URIWriteCloser, err error) {
 		if err != nil {
 			dialog.ShowError(err, d.window)
@@ -1304,6 +1549,11 @@ func (d *DesktopApp) deleteSelectedObject() {
 
 	if acc == nil || bucket == "" || obj == nil {
 		dialog.ShowInformation("Select Object", "Please select an object to delete.", d.window)
+		return
+	}
+
+	if obj.IsPrefix {
+		dialog.ShowInformation("Directory", "Deleting common prefix directories directly is not supported.", d.window)
 		return
 	}
 

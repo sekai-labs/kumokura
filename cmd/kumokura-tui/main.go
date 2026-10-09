@@ -13,7 +13,6 @@ import (
 )
 
 func main() {
-	// Silence stdlib logging to prevent terminal corruption during alt-screen execution
 	if logPath := os.Getenv("KUMOKURA_LOG_FILE"); logPath != "" {
 		f, err := tea.LogToFile(logPath, "kumokura-tui")
 		if err == nil {
@@ -35,6 +34,8 @@ func main() {
 	services := tui.Services{
 		AccountService:  app.AccountService,
 		TransferService: app.TransferService,
+		SyncService:     app.SyncService,
+		SyncRepo:        app.SyncRepo,
 	}
 
 	accounts, err := app.AccountService.ListAccounts(ctx)

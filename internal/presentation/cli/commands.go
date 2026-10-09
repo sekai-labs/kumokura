@@ -9,7 +9,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/spf13/cobra"
 	accountDomain "github.com/sekai-labs/kumokura/internal/accounts/domain"
 	accountPorts "github.com/sekai-labs/kumokura/internal/accounts/ports"
 	"github.com/sekai-labs/kumokura/internal/bootstrap"
@@ -19,6 +18,7 @@ import (
 	"github.com/sekai-labs/kumokura/internal/presentation/tui"
 	syncDomain "github.com/sekai-labs/kumokura/internal/synchronization/domain"
 	syncPorts "github.com/sekai-labs/kumokura/internal/synchronization/ports"
+	"github.com/spf13/cobra"
 )
 
 type RootOptions struct {
@@ -30,8 +30,8 @@ func NewRootCmd(app *bootstrap.AppContainer, out, err io.Writer) *cobra.Command 
 	opts := &RootOptions{}
 
 	rootCmd := &cobra.Command{
-		Use:   "kumokura",
-		Short: "Kumokura - high-performance cross-cloud S3 storage manager",
+		Use:           "kumokura",
+		Short:         "Kumokura - high-performance cross-cloud S3 storage manager",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -958,6 +958,8 @@ func newTUICmd(app *bootstrap.AppContainer, opts *RootOptions, out, err io.Write
 			services := tui.Services{
 				AccountService:  app.AccountService,
 				TransferService: app.TransferService,
+				SyncService:     app.SyncService,
+				SyncRepo:        app.SyncRepo,
 			}
 
 			targetAccount := opts.Account

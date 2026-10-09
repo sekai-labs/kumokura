@@ -45,11 +45,11 @@ func TestEnsureDirs(t *testing.T) {
 func TestConfigSaveAndFolderConfig(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := &config.Config{
-		ConfigDir:             filepath.Join(tmp, "config"),
-		DataDir:               filepath.Join(tmp, "data"),
-		SecretsDir:            filepath.Join(tmp, "secrets"),
-		DBPath:                filepath.Join(tmp, "data", "test.db"),
-		LogLevel:              "DEBUG",
+		ConfigDir:            filepath.Join(tmp, "config"),
+		DataDir:              filepath.Join(tmp, "data"),
+		SecretsDir:           filepath.Join(tmp, "secrets"),
+		DBPath:               filepath.Join(tmp, "data", "test.db"),
+		LogLevel:             "DEBUG",
 		MaxUploadConcurrency: 100,
 	}
 	err := cfg.Save()

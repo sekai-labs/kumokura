@@ -21,6 +21,8 @@ type KeyMap struct {
 	Upload       key.Binding
 	Download     key.Binding
 	Delete       key.Binding
+	Presign      key.Binding
+	Inspector    key.Binding
 	ToggleDetail key.Binding
 	Refresh      key.Binding
 	Help         key.Binding
@@ -90,12 +92,20 @@ var DefaultKeyMap = KeyMap{
 		key.WithHelp("d", "download"),
 	),
 	Delete: key.NewBinding(
-		key.WithKeys("D"),
-		key.WithHelp("D", "delete"),
+		key.WithKeys("x", "delete", "D"),
+		key.WithHelp("x/del", "delete"),
+	),
+	Presign: key.NewBinding(
+		key.WithKeys("p"),
+		key.WithHelp("p", "presign URL"),
+	),
+	Inspector: key.NewBinding(
+		key.WithKeys("i"),
+		key.WithHelp("i", "toggle inspector"),
 	),
 	ToggleDetail: key.NewBinding(
-		key.WithKeys("p"),
-		key.WithHelp("p", "preview"),
+		key.WithKeys("i"),
+		key.WithHelp("i", "inspector"),
 	),
 	Refresh: key.NewBinding(
 		key.WithKeys("r"),

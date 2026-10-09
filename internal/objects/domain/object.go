@@ -6,9 +6,10 @@ import (
 	"strings"
 	"time"
 )
+
 var (
-	ErrEmptyObjectKey    = errors.New("object key cannot be empty")
-	ErrPathTraversal     = errors.New("path traversal detected in object key")
+	ErrEmptyObjectKey = errors.New("object key cannot be empty")
+	ErrPathTraversal  = errors.New("path traversal detected in object key")
 )
 
 type StorageClass string

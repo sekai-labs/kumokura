@@ -2,12 +2,12 @@ package s3
 
 import (
 	"context"
-	"strings"
 	"github.com/aws/aws-sdk-go-v2/aws"
-	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/sekai-labs/kumokura/internal/buckets/domain"
 	"github.com/sekai-labs/kumokura/internal/buckets/ports"
+	"strings"
 )
 
 type S3ClientAPI interface {

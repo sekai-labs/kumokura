@@ -16,15 +16,15 @@ type ListObjectsResult struct {
 }
 
 type ListObjectVersionsResult struct {
-	Versions              []domain.ObjectVersion
-	NextKeyMarker         string
-	NextVersionIDMarker   string
-	IsTruncated           bool
+	Versions            []domain.ObjectVersion
+	NextKeyMarker       string
+	NextVersionIDMarker string
+	IsTruncated         bool
 }
 
 type ObjectContent struct {
-	Body          io.ReadCloser
-	Metadata      domain.ObjectMetadata
+	Body     io.ReadCloser
+	Metadata domain.ObjectMetadata
 }
 
 type ObjectStorage interface {
