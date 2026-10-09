@@ -118,7 +118,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     container:
-      image: archlinux:base-devel
+      image: quay.io/archlinux/archlinux:base-devel
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
