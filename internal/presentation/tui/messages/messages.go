@@ -106,3 +106,36 @@ type SyncJobsLoadedMsg struct {
 	Jobs []*syncPorts.SyncJobRecord
 	Err  error
 }
+
+type BucketInfoLoadedMsg struct {
+	BucketName   string
+	Region       string
+	CreationDate string
+	TotalObjects int
+	TotalBytes   int64
+	Err          error
+}
+
+type BucketDeletedMsg struct {
+	BucketName string
+	Err        error
+}
+
+type BucketEmptiedMsg struct {
+	BucketName   string
+	DeletedCount int
+	Err          error
+}
+
+type BucketConfigLoadedMsg struct {
+	BucketName string
+	Versioning bucketDomain.VersioningConfig
+	Lifecycle  []bucketDomain.LifecycleRule
+	Err        error
+}
+
+type BucketConfigUpdatedMsg struct {
+	BucketName string
+	Message    string
+	Err        error
+}

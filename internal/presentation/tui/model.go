@@ -76,11 +76,19 @@ type Model struct {
 	downloadModal    components.DownloadModal
 	downloadTargets  []downloadTarget
 	presignModal     components.PresignModal
+	bucketActionsModal components.BucketActionsModal
+	showBucketDeleteModal bool
+	showBucketEmptyModal  bool
+	showBucketConfigModal bool
+	showBucketInfoModal   bool
+	bucketActionTarget    string
+	bucketInfoText        string
+	bucketConfigText      string
+	bucketVersioningState string
 	activeUploads    int
 	notification string
 	notifTimerID int
 }
-
 type downloadTarget struct {
 	Key      string
 	IsFolder bool
@@ -138,6 +146,7 @@ func NewModel(services Services) Model {
 		yaziPicker:    filepicker.NewYaziPicker(".", "", "", st),
 		downloadModal: components.NewDownloadModal(st),
 		presignModal:  components.NewPresignModal(st),
+		bucketActionsModal: components.NewBucketActionsModal(st),
 		activeTab:     0,
 		explorerView:  views.NewExplorerView(st),
 		transfersView: views.NewTransfersView(st),
@@ -288,6 +297,65 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.syncView.Jobs = msg.Jobs
 		}
 
+	case messages.BucketInfoLoadedMsg:
+		if msg.Err != nil {
+			m.notification = fmt.Sprintf("Failed to load bucket properties: %v", msg.Err)
+		} else {
+			m.bucketInfoText = fmt.Sprintf("Bucket Name:   %s\nRegion:        %s\nCreated:       %s\nTotal Objects: %d\nTotal Size:    %s",
+				msg.BucketName, msg.Region, msg.CreationDate, msg.TotalObjects, formatBytes(msg.TotalBytes))
+			m.showBucketInfoModal = true
+		}
+
+	case messages.BucketDeletedMsg:
+		if msg.Err != nil {
+			m.notification = fmt.Sprintf("Delete bucket failed: %v", msg.Err)
+		} else {
+			m.notification = fmt.Sprintf("Bucket '%s' successfully deleted", msg.BucketName)
+			if m.activeBucket == msg.BucketName {
+				m.activeBucket = ""
+				m.explorerView.ActiveBucket = ""
+				m.explorerView.CurrentPrefix = ""
+				m.explorerView.Objects = nil
+				m.explorerView.Prefixes = nil
+			}
+			cmds = append(cmds, m.loadBucketsCmd())
+		}
+
+	case messages.BucketEmptiedMsg:
+		if msg.Err != nil {
+			m.notification = fmt.Sprintf("Empty bucket failed: %v", msg.Err)
+		} else {
+			m.notification = fmt.Sprintf("Bucket '%s' emptied (%d objects deleted)", msg.BucketName, msg.DeletedCount)
+			if m.activeBucket == msg.BucketName {
+				cmds = append(cmds, m.loadObjectsCmd(m.activeBucket, m.explorerView.CurrentPrefix))
+			}
+		}
+
+	case messages.BucketConfigLoadedMsg:
+		if msg.Err != nil {
+			m.notification = fmt.Sprintf("Failed to load bucket config: %v", msg.Err)
+		} else {
+			status := string(msg.Versioning.Status)
+			if status == "" {
+				status = "Disabled/Suspended"
+			}
+			m.bucketVersioningState = status
+			lifecycleDesc := "No lifecycle rules"
+			if len(msg.Lifecycle) > 0 {
+				lifecycleDesc = fmt.Sprintf("%d rule(s) configured", len(msg.Lifecycle))
+			}
+			m.bucketConfigText = fmt.Sprintf("Bucket:     %s\nVersioning: %s\nLifecycle:  %s\n\nPress [v] to toggle versioning (Enable / Suspend)",
+				msg.BucketName, status, lifecycleDesc)
+			m.showBucketConfigModal = true
+		}
+
+	case messages.BucketConfigUpdatedMsg:
+		if msg.Err != nil {
+			m.notification = fmt.Sprintf("Update bucket config failed: %v", msg.Err)
+		} else {
+			m.notification = msg.Message
+			cmds = append(cmds, m.inspectBucketConfigCmd(msg.BucketName))
+		}
 	case messages.StatusNotificationMsg:
 		m.notification = msg.Message
 		m.notifTimerID++
@@ -327,6 +395,85 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.showBucketInfoModal {
+			if key.Matches(msg, m.keymap.Escape, m.keymap.Enter, m.keymap.Quit) {
+				m.showBucketInfoModal = false
+			}
+			return m, nil
+		}
+
+		if m.showBucketDeleteModal {
+			switch msg.String() {
+			case "y", "Y", "enter":
+				m.showBucketDeleteModal = false
+				if m.bucketActionTarget != "" {
+					cmds = append(cmds, m.deleteBucketCmd(m.bucketActionTarget))
+				}
+				return m, tea.Batch(cmds...)
+			case "n", "N", "esc":
+				m.showBucketDeleteModal = false
+			}
+			return m, nil
+		}
+
+		if m.showBucketEmptyModal {
+			switch msg.String() {
+			case "y", "Y", "enter":
+				m.showBucketEmptyModal = false
+				if m.bucketActionTarget != "" {
+					m.notification = fmt.Sprintf("Emptying bucket %s...", m.bucketActionTarget)
+					cmds = append(cmds, m.emptyBucketCmd(m.bucketActionTarget))
+				}
+				return m, tea.Batch(cmds...)
+			case "n", "N", "esc":
+				m.showBucketEmptyModal = false
+			}
+			return m, nil
+		}
+
+		if m.showBucketConfigModal {
+			switch msg.String() {
+			case "v", "V":
+				enable := m.bucketVersioningState != "Enabled"
+				cmds = append(cmds, m.toggleBucketVersioningCmd(m.bucketActionTarget, enable))
+				return m, tea.Batch(cmds...)
+			case "esc", "enter", "q":
+				m.showBucketConfigModal = false
+			}
+			return m, nil
+		}
+
+		if m.bucketActionsModal.Active {
+			switch msg.String() {
+			case "esc", "q":
+				m.bucketActionsModal.Active = false
+				return m, nil
+			case "k", "up":
+				m.bucketActionsModal.MoveUp()
+				return m, nil
+			case "j", "down":
+				m.bucketActionsModal.MoveDown()
+				return m, nil
+			case "enter":
+				m.bucketActionsModal.Active = false
+				targetBucket := m.bucketActionsModal.BucketName
+				selectedOpt := m.bucketActionsModal.SelectedOption()
+				m.bucketActionTarget = targetBucket
+				switch selectedOpt.ID {
+				case "info":
+					cmds = append(cmds, m.inspectBucketInfoCmd(targetBucket))
+				case "delete":
+					m.showBucketDeleteModal = true
+				case "empty":
+					m.showBucketEmptyModal = true
+				case "config":
+					cmds = append(cmds, m.inspectBucketConfigCmd(targetBucket))
+				}
+				return m, tea.Batch(cmds...)
+			}
+			return m, nil
+		}
+
 
 		if m.yaziPicker.Active {
 			switch msg.String() {
@@ -357,14 +504,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "enter", "u", "y":
 				selectedPaths := m.yaziPicker.GetSelectedPaths()
+				targetPrefix := m.yaziPicker.TargetPrefix
 				m.yaziPicker.Active = false
 				if len(selectedPaths) == 0 {
 					m.notification = "No files or directories selected"
 					return m, nil
 				}
 				m.activeUploads++
-				m.notification = fmt.Sprintf("Uploading %d item(s) to s3://%s/%s...", len(selectedPaths), m.activeBucket, m.explorerView.CurrentPrefix)
-				cmds = append(cmds, m.uploadBatchCmd(m.activeBucket, m.explorerView.CurrentPrefix, selectedPaths))
+				m.notification = fmt.Sprintf("Uploading %d item(s) to s3://%s/%s...", len(selectedPaths), m.activeBucket, targetPrefix)
+				cmds = append(cmds, m.uploadBatchCmd(m.activeBucket, targetPrefix, selectedPaths))
 				cmds = append(cmds, m.loadTransfersCmd())
 				return m, tea.Batch(cmds...)
 			}
@@ -388,14 +536,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					} else if fi.IsDir() {
 						m.uploadModal.Active = false
 						m.uploadModal.Input.Blur()
+						targetPrefix := m.explorerView.GetCurrentTargetPrefix()
 						m.notification = fmt.Sprintf("Uploading folder %s...", filepath.Base(path))
-						cmds = append(cmds, m.uploadFolderCmd(m.activeBucket, m.explorerView.CurrentPrefix, path))
+						cmds = append(cmds, m.uploadFolderCmd(m.activeBucket, targetPrefix, path))
 					} else {
 						m.uploadModal.Active = false
 						m.uploadModal.Input.Blur()
+						targetPrefix := m.explorerView.GetCurrentTargetPrefix()
 						targetKey := m.uploadModal.TargetKey
 						if targetKey == "" {
 							targetKey = filepath.Base(path)
+						}
+						if targetPrefix != "" && !strings.HasPrefix(targetKey, targetPrefix) {
+							targetKey = filepath.ToSlash(filepath.Join(targetPrefix, targetKey))
 						}
 						m.notification = fmt.Sprintf("Uploading %s...", filepath.Base(path))
 						cmds = append(cmds, m.uploadObjectCmd(m.activeBucket, targetKey, path))
@@ -523,8 +676,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.explorerView.ActivePaneIndex = (m.explorerView.ActivePaneIndex + 2) % 3
 
 		case key.Matches(msg, m.keymap.Inspector), key.Matches(msg, m.keymap.ToggleDetail):
-			m.explorerView.ShowPreview = !m.explorerView.ShowPreview
-
+			if (m.activeTab == 0 || m.activeTab == 1) && m.explorerView.ActivePaneIndex == 0 {
+				b := m.explorerView.SelectedBucketItem()
+				if b != nil {
+					m.bucketActionsModal.Active = true
+					m.bucketActionsModal.BucketName = b.Name
+					m.bucketActionsModal.SelectedIdx = 0
+				}
+			} else {
+				m.explorerView.ShowPreview = !m.explorerView.ShowPreview
+			}
 		case key.Matches(msg, m.keymap.Refresh):
 			cmds = append(cmds, m.loadBucketsCmd())
 			if m.activeBucket != "" {
@@ -623,7 +784,47 @@ func (m Model) handleExplorerKeys(msg tea.KeyMsg, cmds []tea.Cmd) (Model, []tea.
 			cmds = append(cmds, m.inspectCurrentObjectCmd())
 		}
 
-	case key.Matches(msg, m.keymap.Enter), key.Matches(msg, m.keymap.Right):
+	case key.Matches(msg, m.keymap.Enter):
+		if m.explorerView.ActivePaneIndex == 0 {
+			if len(m.explorerView.Buckets) > m.explorerView.SelectedBucket {
+				selectedName := m.explorerView.Buckets[m.explorerView.SelectedBucket].Name
+				m.bucketActionsModal.Active = true
+				m.bucketActionsModal.BucketName = selectedName
+				m.bucketActionsModal.SelectedIdx = 0
+				m.activeBucket = selectedName
+				m.explorerView.ActiveBucket = selectedName
+			}
+		} else if m.explorerView.ActivePaneIndex == 1 {
+			if m.explorerView.SelectedObject < len(m.explorerView.Prefixes) {
+				targetPrefix := m.explorerView.Prefixes[m.explorerView.SelectedObject].Prefix
+				m.explorerView.CurrentPrefix = targetPrefix
+				m.explorerView.SelectedObject = 0
+				m.explorerView.ObjectOffset = 0
+				m.explorerView.PreviewMetadata = nil
+				m.explorerView.PreviewContent = nil
+				m.explorerView.PreviewTags = nil
+				cmds = append(cmds, m.loadObjectsCmd(m.activeBucket, targetPrefix))
+			} else {
+				objIdx := m.explorerView.SelectedObject - len(m.explorerView.Prefixes)
+				if objIdx < len(m.explorerView.Objects) {
+					obj := m.explorerView.Objects[objIdx]
+					if strings.HasSuffix(obj.Key, "/") {
+						m.explorerView.CurrentPrefix = obj.Key
+						m.explorerView.SelectedObject = 0
+						m.explorerView.ObjectOffset = 0
+						m.explorerView.PreviewMetadata = nil
+						m.explorerView.PreviewContent = nil
+						m.explorerView.PreviewTags = nil
+						cmds = append(cmds, m.loadObjectsCmd(m.activeBucket, obj.Key))
+					} else {
+						m.explorerView.ShowPreview = true
+						cmds = append(cmds, m.inspectCurrentObjectCmd())
+					}
+				}
+			}
+		}
+
+	case key.Matches(msg, m.keymap.Right):
 		if m.explorerView.ActivePaneIndex == 0 {
 			if len(m.explorerView.Buckets) > m.explorerView.SelectedBucket {
 				m.activeBucket = m.explorerView.Buckets[m.explorerView.SelectedBucket].Name
@@ -783,15 +984,15 @@ func (m Model) handleExplorerKeys(msg tea.KeyMsg, cmds []tea.Cmd) (Model, []tea.
 		if m.activeBucket == "" {
 			m.notification = "Select a bucket before uploading"
 		} else {
+			targetPrefix := m.explorerView.GetCurrentTargetPrefix()
 			cwd, _ := os.Getwd()
-			m.yaziPicker = filepicker.NewYaziPicker(cwd, m.activeBucket, m.explorerView.CurrentPrefix, m.styles)
+			m.yaziPicker = filepicker.NewYaziPicker(cwd, m.activeBucket, targetPrefix, m.styles)
 			m.yaziPicker.Active = true
 			m.uploadModal.Active = true
-			m.uploadModal.Destination = fmt.Sprintf("s3://%s/%s", m.activeBucket, m.explorerView.CurrentPrefix)
+			m.uploadModal.Destination = fmt.Sprintf("s3://%s/%s", m.activeBucket, targetPrefix)
 			m.uploadModal.ErrorText = ""
 			m.uploadModal.Input.SetValue("")
 		}
-
 	case key.Matches(msg, m.keymap.Download):
 		if m.activeBucket == "" {
 			m.notification = "Select a bucket before downloading"
@@ -975,6 +1176,49 @@ func (m Model) View() string {
 			m.styles,
 		)
 		return deleteModal.Render(m.width, m.height)
+	}
+	if m.bucketActionsModal.Active {
+		return m.bucketActionsModal.Render(m.width, m.height)
+	}
+
+	if m.showBucketInfoModal {
+		infoModal := components.NewModalDialog(
+			"BUCKET PROPERTIES / INFO",
+			m.bucketInfoText,
+			[]string{"Close (Enter/Esc)"},
+			m.styles,
+		)
+		return infoModal.Render(m.width, m.height)
+	}
+
+	if m.showBucketDeleteModal {
+		deleteModal := components.NewModalDialog(
+			"CONFIRM BUCKET DELETION",
+			fmt.Sprintf("Permanently delete bucket '%s'?\nNote: S3 requires the bucket to be completely empty.", m.bucketActionTarget),
+			[]string{"Yes (Enter)", "Cancel (Esc)"},
+			m.styles,
+		)
+		return deleteModal.Render(m.width, m.height)
+	}
+
+	if m.showBucketEmptyModal {
+		emptyModal := components.NewModalDialog(
+			"CONFIRM EMPTY BUCKET",
+			fmt.Sprintf("Permanently delete ALL objects in bucket '%s'?\nWARNING: This cannot be undone!", m.bucketActionTarget),
+			[]string{"Yes (Enter)", "Cancel (Esc)"},
+			m.styles,
+		)
+		return emptyModal.Render(m.width, m.height)
+	}
+
+	if m.showBucketConfigModal {
+		cfgModal := components.NewModalDialog(
+			"BUCKET CONFIGURATION / EDIT",
+			m.bucketConfigText,
+			[]string{"Toggle Versioning (v)", "Close (Esc)"},
+			m.styles,
+		)
+		return cfgModal.Render(m.width, m.height)
 	}
 	return mainView
 }
@@ -1969,5 +2213,147 @@ func (m Model) openMediaExternalCmd(bucket, key string) tea.Cmd {
 		}
 
 		return messages.StatusNotificationMsg{Message: fmt.Sprintf("Opened %s in system viewer", cleanFileName)}
+	}
+}
+
+func (m Model) inspectBucketInfoCmd(bucket string) tea.Cmd {
+	return func() tea.Msg {
+		if m.services.BucketService == nil {
+			return messages.BucketInfoLoadedMsg{
+				BucketName: bucket,
+				Err:        fmt.Errorf("bucket service unavailable"),
+			}
+		}
+		ctx := context.Background()
+		loc, err := m.services.BucketService.GetBucketLocation(ctx, bucket)
+		if err != nil {
+			loc = "unknown"
+		}
+
+		var createdStr string = "unknown"
+		for _, b := range m.explorerView.Buckets {
+			if b.Name == bucket {
+				if !b.CreationDate.IsZero() {
+					createdStr = b.CreationDate.Format("2006-01-02 15:04:05")
+				}
+				break
+			}
+		}
+
+		totalObjs := 0
+		var totalBytes int64 = 0
+		if m.services.ObjectService != nil {
+			objs, sErr := m.services.ObjectService.SearchObjects(ctx, bucket, "", "")
+			if sErr == nil {
+				totalObjs = len(objs)
+				for _, o := range objs {
+					totalBytes += o.Size
+				}
+			}
+		}
+
+		return messages.BucketInfoLoadedMsg{
+			BucketName:   bucket,
+			Region:       loc,
+			CreationDate: createdStr,
+			TotalObjects: totalObjs,
+			TotalBytes:   totalBytes,
+		}
+	}
+}
+
+func (m Model) deleteBucketCmd(bucket string) tea.Cmd {
+	return func() tea.Msg {
+		if m.services.BucketService == nil {
+			return messages.BucketDeletedMsg{
+				BucketName: bucket,
+				Err:        fmt.Errorf("bucket service unavailable"),
+			}
+		}
+		err := m.services.BucketService.DeleteBucket(context.Background(), bucket)
+		return messages.BucketDeletedMsg{
+			BucketName: bucket,
+			Err:        err,
+		}
+	}
+}
+
+func (m Model) emptyBucketCmd(bucket string) tea.Cmd {
+	return func() tea.Msg {
+		if m.services.ObjectService == nil {
+			return messages.BucketEmptiedMsg{
+				BucketName: bucket,
+				Err:        fmt.Errorf("object service unavailable"),
+			}
+		}
+		ctx := context.Background()
+		objs, err := m.services.ObjectService.SearchObjects(ctx, bucket, "", "")
+		if err != nil {
+			return messages.BucketEmptiedMsg{
+				BucketName: bucket,
+				Err:        err,
+			}
+		}
+		var keys []string
+		for _, o := range objs {
+			keys = append(keys, o.Key)
+		}
+		if len(keys) == 0 {
+			return messages.BucketEmptiedMsg{
+				BucketName:   bucket,
+				DeletedCount: 0,
+			}
+		}
+		deleted, delErr := m.services.ObjectService.BatchDeleteObjects(ctx, bucket, keys)
+		return messages.BucketEmptiedMsg{
+			BucketName:   bucket,
+			DeletedCount: len(deleted),
+			Err:          delErr,
+		}
+	}
+}
+
+func (m Model) inspectBucketConfigCmd(bucket string) tea.Cmd {
+	return func() tea.Msg {
+		if m.services.BucketService == nil {
+			return messages.BucketConfigLoadedMsg{
+				BucketName: bucket,
+				Err:        fmt.Errorf("bucket service unavailable"),
+			}
+		}
+		ctx := context.Background()
+		vCfg, vErr := m.services.BucketService.GetBucketVersioning(ctx, bucket)
+		rules, _ := m.services.BucketService.GetBucketLifecycle(ctx, bucket)
+		return messages.BucketConfigLoadedMsg{
+			BucketName: bucket,
+			Versioning: vCfg,
+			Lifecycle:  rules,
+			Err:        vErr,
+		}
+	}
+}
+
+func (m Model) toggleBucketVersioningCmd(bucket string, enable bool) tea.Cmd {
+	return func() tea.Msg {
+		if m.services.BucketService == nil {
+			return messages.BucketConfigUpdatedMsg{
+				BucketName: bucket,
+				Err:        fmt.Errorf("bucket service unavailable"),
+			}
+		}
+		status := bucketDomain.VersioningStatusSuspended
+		msg := fmt.Sprintf("Bucket '%s' versioning suspended", bucket)
+		if enable {
+			status = bucketDomain.VersioningStatusEnabled
+			msg = fmt.Sprintf("Bucket '%s' versioning enabled", bucket)
+		}
+		err := m.services.BucketService.SetBucketVersioning(context.Background(), bucket, bucketDomain.VersioningConfig{
+			Status: status,
+		})
+		return messages.BucketConfigUpdatedMsg{
+			BucketName: bucket,
+			Message:    msg,
+			Err:        err,
+		}
 	}
 }

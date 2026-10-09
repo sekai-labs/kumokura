@@ -1,6 +1,7 @@
 package components
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -316,6 +317,150 @@ func (p *PresignModal) Render(totalWidth, totalHeight int) string {
 
 	content := lipgloss.JoinVertical(lipgloss.Left, items...)
 	box := p.styles.ModalBox.Width(dialogWidth).Render(content)
+
+	return lipgloss.Place(totalWidth, totalHeight, lipgloss.Center, lipgloss.Center, box)
+}
+
+type BucketActionOption struct {
+	ID          string
+	Title       string
+	Description string
+}
+
+type BucketActionsModal struct {
+	Active      bool
+	BucketName  string
+	Options     []BucketActionOption
+	SelectedIdx int
+	styles      styles.Styles
+}
+
+func NewBucketActionsModal(s styles.Styles) BucketActionsModal {
+	opts := []BucketActionOption{
+		{
+			ID:          "info",
+			Title:       "1. Bucket Properties / Info",
+			Description: "View bucket name, creation date, region, storage stats",
+		},
+		{
+			ID:          "delete",
+			Title:       "2. Delete Bucket",
+			Description: "Permanently delete the bucket (fails if non-empty)",
+		},
+		{
+			ID:          "empty",
+			Title:       "3. Empty Bucket",
+			Description: "Permanently delete all objects inside this bucket",
+		},
+		{
+			ID:          "config",
+			Title:       "4. Bucket Configuration / Edit",
+			Description: "View or toggle bucket versioning and lifecycle settings",
+		},
+	}
+	return BucketActionsModal{
+		Options:     opts,
+		SelectedIdx: 0,
+		styles:      s,
+	}
+}
+
+func (b *BucketActionsModal) MoveUp() {
+	if b.SelectedIdx > 0 {
+		b.SelectedIdx--
+	} else {
+		b.SelectedIdx = len(b.Options) - 1
+	}
+}
+
+func (b *BucketActionsModal) MoveDown() {
+	if b.SelectedIdx < len(b.Options)-1 {
+		b.SelectedIdx++
+	} else {
+		b.SelectedIdx = 0
+	}
+}
+
+func (b *BucketActionsModal) SelectedOption() BucketActionOption {
+	if b.SelectedIdx >= 0 && b.SelectedIdx < len(b.Options) {
+		return b.Options[b.SelectedIdx]
+	}
+	return BucketActionOption{}
+}
+
+func (b *BucketActionsModal) Render(totalWidth, totalHeight int) string {
+	dialogWidth := 66
+	if totalWidth-6 < dialogWidth {
+		dialogWidth = totalWidth - 6
+	}
+	if dialogWidth < 36 {
+		dialogWidth = 36
+	}
+
+	headerBox := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(b.styles.Theme.BorderActive).
+		Border(lipgloss.NormalBorder(), false, false, true, false).
+		BorderForeground(b.styles.Theme.BorderInactive).
+		Padding(0, 0, 1, 0).
+		Width(dialogWidth - 4).
+		Render(fmt.Sprintf("🪣 BUCKET ACTIONS: %s", b.BucketName))
+
+	var rows []string
+	for i, opt := range b.Options {
+		isSel := i == b.SelectedIdx
+		var prefix string
+		var titleStyle lipgloss.Style
+		var descStyle lipgloss.Style
+
+		if isSel {
+			prefix = " ▶ "
+			titleStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(b.styles.Theme.AccentSky)
+			descStyle = lipgloss.NewStyle().
+				Foreground(b.styles.Theme.TextPrimary)
+		} else {
+			prefix = "   "
+			titleStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(b.styles.Theme.TextPrimary)
+			descStyle = lipgloss.NewStyle().
+				Foreground(b.styles.Theme.TextMuted)
+		}
+
+		titleLine := titleStyle.Render(prefix + opt.Title)
+		descLine := descStyle.Render("     " + opt.Description)
+		itemBox := lipgloss.JoinVertical(lipgloss.Left, titleLine, descLine)
+		if isSel {
+			itemBox = lipgloss.NewStyle().
+				Background(b.styles.Theme.HighlightRow).
+				Width(dialogWidth - 4).
+				Padding(0, 1).
+				Render(itemBox)
+		} else {
+			itemBox = lipgloss.NewStyle().
+				Width(dialogWidth - 4).
+				Padding(0, 1).
+				Render(itemBox)
+		}
+		rows = append(rows, itemBox)
+	}
+
+	keyEnter := b.styles.StatusKey.Render("[Enter]")
+	descEnter := b.styles.StatusDesc.Render(" Select   ")
+	keyNav := b.styles.StatusKey.Render("[j/k / ↑/↓]")
+	descNav := b.styles.StatusDesc.Render(" Navigate   ")
+	keyEsc := b.styles.StatusKey.Render("[Esc]")
+	descEsc := b.styles.StatusDesc.Render(" Cancel")
+	hint := lipgloss.JoinHorizontal(lipgloss.Left, keyEnter, descEnter, keyNav, descNav, keyEsc, descEsc)
+
+	items := []string{headerBox, ""}
+	items = append(items, rows...)
+	items = append(items, "", hint)
+
+	content := lipgloss.JoinVertical(lipgloss.Left, items...)
+	box := b.styles.ModalBox.Width(dialogWidth).Render(content)
 
 	return lipgloss.Place(totalWidth, totalHeight, lipgloss.Center, lipgloss.Center, box)
 }

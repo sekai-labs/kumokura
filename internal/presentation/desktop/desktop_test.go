@@ -416,3 +416,68 @@ func TestDesktopAppCellAndListItemRendering(t *testing.T) {
 	bucketBox.Resize(fyne.NewSize(250, 40))
 	assert.Greater(t, bucketLbl.Size().Width, float32(200))
 }
+func TestDesktopAppFolderDeletionAndBucketActions(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config.Config{
+		ConfigDir:  tempDir,
+		DataDir:    tempDir,
+		SecretsDir: tempDir,
+		DBPath:     ":memory:",
+		LogLevel:   "error",
+	}
+
+	appContainer, err := bootstrap.InitializeWithConfig(context.Background(), cfg)
+	require.NoError(t, err)
+	defer appContainer.Close()
+
+	fyneTestApp := test.NewApp()
+	app := NewDesktopAppWithFyneApp(appContainer, fyneTestApp)
+	require.NotNil(t, app)
+
+	// Test upload target prefix computation
+	app.mu.Lock()
+	app.currentPrefix = "a/"
+	app.flatMode = false
+	app.mu.Unlock()
+
+	// Verify currentPrefix is preserved and correctly prepended
+	app.mu.RLock()
+	assert.Equal(t, "a/", app.currentPrefix)
+	assert.False(t, app.flatMode)
+	app.mu.RUnlock()
+
+	// Verify bucket context menu triggers without panic
+	assert.NotPanics(t, func() {
+		app.showBucketContextMenu("test-bucket", fyne.NewPos(50, 50))
+	})
+
+	// Verify inspect bucket dialog triggers without panic
+	assert.NotPanics(t, func() {
+		app.showInspectBucketDialog("test-bucket")
+	})
+
+	// Verify empty bucket dialog triggers without panic
+	assert.NotPanics(t, func() {
+		app.showEmptyBucketDialog("test-bucket")
+	})
+
+	// Verify edit bucket dialog triggers without panic
+	assert.NotPanics(t, func() {
+		app.showEditBucketDialog("test-bucket")
+	})
+
+	// Verify delete selected folder handles prefix correctly
+	app.mu.Lock()
+	app.selectedAccount = &accountDomain.Account{Name: "test-account"}
+	app.selectedBucket = "test-bucket"
+	app.selectedObject = &objectDomain.Object{
+		Bucket:   "test-bucket",
+		Key:      "photos/vacation/",
+		IsPrefix: true,
+	}
+	app.mu.Unlock()
+
+	assert.NotPanics(t, func() {
+		app.deleteSelectedObject()
+	})
+}

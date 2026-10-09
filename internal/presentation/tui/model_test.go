@@ -332,3 +332,92 @@ func TestTUI_OpenMediaKey(t *testing.T) {
 	assert.NotNil(t, cmd)
 	assert.Contains(t, uOpen.notification, "Opening video.mp4 with system player")
 }
+
+func TestTUI_BucketActionsModal(t *testing.T) {
+	model := NewModel(Services{})
+	model.explorerView.Buckets = []bucketDomain.Bucket{
+		{Name: "my-test-bucket", Region: "us-east-1"},
+	}
+	model.explorerView.SelectedBucket = 0
+	model.explorerView.ActivePaneIndex = 0
+
+	// Press 'i' on bucket list
+	mI, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
+	uI := mI.(Model)
+	assert.True(t, uI.bucketActionsModal.Active)
+	assert.Equal(t, "my-test-bucket", uI.bucketActionsModal.BucketName)
+
+	view := uI.View()
+	assert.Contains(t, view, "BUCKET ACTIONS: my-test-bucket")
+	assert.Contains(t, view, "1. Bucket Properties / Info")
+	assert.Contains(t, view, "2. Delete Bucket")
+	assert.Contains(t, view, "3. Empty Bucket")
+	assert.Contains(t, view, "4. Bucket Configuration / Edit")
+
+	// Navigate down with 'j'
+	mDown, _ := uI.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	uDown := mDown.(Model)
+	assert.Equal(t, 1, uDown.bucketActionsModal.SelectedIdx)
+	assert.Equal(t, "delete", uDown.bucketActionsModal.SelectedOption().ID)
+
+	// Navigate down to 'empty'
+	mDown2, _ := uDown.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	uDown2 := mDown2.(Model)
+	assert.Equal(t, 2, uDown2.bucketActionsModal.SelectedIdx)
+	assert.Equal(t, "empty", uDown2.bucketActionsModal.SelectedOption().ID)
+
+	// Select 'Empty Bucket' with Enter
+	mEnter, _ := uDown2.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	uEnter := mEnter.(Model)
+	assert.False(t, uEnter.bucketActionsModal.Active)
+	assert.True(t, uEnter.showBucketEmptyModal)
+	assert.Contains(t, uEnter.View(), "CONFIRM EMPTY BUCKET")
+
+	// Cancel with Esc
+	mEsc, _ := uEnter.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	uEsc := mEsc.(Model)
+	assert.False(t, uEsc.showBucketEmptyModal)
+}
+
+func TestTUI_BucketActionsModal_EnterKey(t *testing.T) {
+	model := NewModel(Services{})
+	model.explorerView.Buckets = []bucketDomain.Bucket{
+		{Name: "prod-bucket", Region: "us-west-2"},
+	}
+	model.explorerView.SelectedBucket = 0
+	model.explorerView.ActivePaneIndex = 0
+
+	// Pressing Enter on bucket list opens the Bucket Actions Modal
+	mEnter, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	uEnter := mEnter.(Model)
+	assert.True(t, uEnter.bucketActionsModal.Active)
+	assert.Equal(t, "prod-bucket", uEnter.bucketActionsModal.BucketName)
+
+	// Pressing 'Esc' cancels modal
+	mEsc, _ := uEnter.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	uEsc := mEsc.(Model)
+	assert.False(t, uEsc.bucketActionsModal.Active)
+}
+
+func TestTUI_UploadTargetRouting_CursorFolder(t *testing.T) {
+	model := NewModel(Services{})
+	model.activeBucket = "my-bucket"
+	model.explorerView.ActiveBucket = "my-bucket"
+	model.explorerView.ActivePaneIndex = 1
+	model.explorerView.CurrentPrefix = "a/"
+	model.explorerView.Prefixes = []objDomain.Prefix{
+		{Prefix: "a/b/"},
+	}
+	model.explorerView.SelectedObject = 0 // Cursor is on folder "a/b/"
+
+	// Target prefix calculation
+	targetPrefix := model.explorerView.GetCurrentTargetPrefix()
+	assert.Equal(t, "a/b/", targetPrefix)
+
+	// Press 'u' to open upload
+	mU, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	uU := mU.(Model)
+	assert.True(t, uU.yaziPicker.Active)
+	assert.Equal(t, "a/b/", uU.yaziPicker.TargetPrefix)
+	assert.Contains(t, uU.uploadModal.Destination, "s3://my-bucket/a/b/")
+}

@@ -50,6 +50,43 @@ func NewExplorerView(s styles.Styles) ExplorerView {
 		styles:          s,
 	}
 }
+func (v ExplorerView) GetCurrentTargetPrefix() string {
+	if v.ActivePaneIndex == 1 {
+		prefixLen := len(v.Prefixes)
+		if v.SelectedObject >= 0 && v.SelectedObject < prefixLen {
+			return v.Prefixes[v.SelectedObject].Prefix
+		}
+		objIdx := v.SelectedObject - prefixLen
+		var visibleObjects []objDomain.Object
+		for _, obj := range v.Objects {
+			if v.CurrentPrefix != "" && (obj.Key == v.CurrentPrefix || obj.Key == strings.TrimSuffix(v.CurrentPrefix, "/")) {
+				continue
+			}
+			visibleObjects = append(visibleObjects, obj)
+		}
+		if objIdx >= 0 && objIdx < len(visibleObjects) {
+			k := visibleObjects[objIdx].Key
+			if strings.HasSuffix(k, "/") {
+				return k
+			}
+		}
+	}
+	return v.CurrentPrefix
+}
+
+func (v ExplorerView) SelectedBucketItem() *bucketDomain.Bucket {
+	if len(v.Buckets) == 0 {
+		return nil
+	}
+	idx := v.SelectedBucket
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(v.Buckets) {
+		idx = len(v.Buckets) - 1
+	}
+	return &v.Buckets[idx]
+}
 
 func (v ExplorerView) Render(width, height int) string {
 	if width < 80 || height < 24 {

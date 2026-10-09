@@ -32,8 +32,10 @@ if (Test-Path $DotnetToolsDir) {
 
 # Strip leading 'v' if present (e.g., "v0.1.0" -> "0.1.0")
 $CleanVersion = $Version.TrimStart('v')
-# WiX requires version format: major.minor.build (e.g. 1.2.3)
-if ($CleanVersion -notmatch '^\d+(\.\d+){1,3}$') {
+$BaseVersion = ($CleanVersion -split '-')[0]
+if ($BaseVersion -match '^\d+(\.\d+){1,3}$') {
+    $CleanVersion = $BaseVersion
+} else {
     $CleanVersion = "0.1.0"
 }
 

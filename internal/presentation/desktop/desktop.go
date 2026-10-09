@@ -417,10 +417,19 @@ func (d *DesktopApp) buildLeftPanel() fyne.CanvasObject {
 	createBucketBtn := widget.NewButtonWithIcon("New", theme.ContentAddIcon(), func() {
 		d.showCreateBucketDialog()
 	})
+	actionsBucketBtn := widget.NewButtonWithIcon("Actions", theme.MenuIcon(), func() {
+		d.mu.RLock()
+		b := d.selectedBucket
+		d.mu.RUnlock()
+		if b == "" {
+			dialog.ShowInformation("Bucket Actions", "Please select a bucket first.", d.window)
+			return
+		}
+		d.showBucketContextMenu(b, fyne.NewPos(100, 100))
+	})
 	deleteBucketBtn := widget.NewButtonWithIcon("Delete", theme.DeleteIcon(), func() {
 		d.showDeleteBucketDialog()
 	})
-
 	d.bucketTabBadge = widget.NewLabelWithStyle("(0)", fyne.TextAlignLeading, fyne.TextStyle{Italic: true})
 
 	d.bucketSearch = widget.NewEntry()
@@ -444,7 +453,7 @@ func (d *DesktopApp) buildLeftPanel() fyne.CanvasObject {
 				widget.NewLabelWithStyle("Buckets", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 				d.bucketTabBadge,
 			),
-			container.NewHBox(createBucketBtn, deleteBucketBtn),
+			container.NewHBox(createBucketBtn, actionsBucketBtn, deleteBucketBtn),
 		),
 		d.bucketSearch,
 	)
@@ -456,7 +465,8 @@ func (d *DesktopApp) buildLeftPanel() fyne.CanvasObject {
 		func() fyne.CanvasObject {
 			icon := widget.NewIcon(theme.StorageIcon())
 			name := widget.NewLabel("Bucket Placeholder")
-			return container.NewBorder(nil, nil, icon, nil, name)
+			box := container.NewBorder(nil, nil, icon, nil, name)
+			return box
 		},
 		func(id widget.ListItemID, obj fyne.CanvasObject) {
 			filtered := d.getFilteredBuckets()
@@ -2195,10 +2205,15 @@ func (d *DesktopApp) showUploadDialog() {
 		filePath := reader.URI().Path()
 		key := filepath.Base(filePath)
 		d.mu.RLock()
-		if d.currentPrefix != "" && !d.flatMode {
-			key = d.currentPrefix + key
-		}
+		targetPrefix := d.currentPrefix
+		flat := d.flatMode
 		d.mu.RUnlock()
+		if targetPrefix != "" && !flat {
+			if !strings.HasSuffix(targetPrefix, "/") {
+				targetPrefix += "/"
+			}
+			key = targetPrefix + key
+		}
 		d.showToast(fmt.Sprintf("Starting upload of %s...", key))
 
 		go func() {
@@ -2318,21 +2333,22 @@ func (d *DesktopApp) showUploadFolderDialog() {
 
 			folderBase := filepath.Base(folderPath)
 			d.mu.RLock()
-			targetFolderPrefix := filepath.ToSlash(filepath.Clean(d.currentPrefix))
+			targetFolderPrefix := d.currentPrefix
 			flat := d.flatMode
 			d.mu.RUnlock()
 
-			if targetFolderPrefix == "." {
+			if !flat && targetFolderPrefix != "" {
+				targetFolderPrefix = filepath.ToSlash(filepath.Clean(targetFolderPrefix))
+				if targetFolderPrefix == "." {
+					targetFolderPrefix = ""
+				}
+				if targetFolderPrefix != "" && !strings.HasSuffix(targetFolderPrefix, "/") {
+					targetFolderPrefix += "/"
+				}
+			} else {
 				targetFolderPrefix = ""
 			}
-			if targetFolderPrefix != "" && !strings.HasSuffix(targetFolderPrefix, "/") {
-				targetFolderPrefix += "/"
-			}
 			folderS3Prefix := targetFolderPrefix + folderBase + "/"
-			if flat {
-				folderS3Prefix = folderBase + "/"
-			}
-
 			_, _ = oService.PutObject(ctx, bucket, folderS3Prefix, bytes.NewReader([]byte{}), 0, objectDomain.ObjectMetadata{
 				ContentType: "application/x-directory",
 			})
@@ -2590,12 +2606,74 @@ func (d *DesktopApp) deleteSelectedObject() {
 	d.mu.RUnlock()
 
 	if acc == nil || bucket == "" || obj == nil {
-		dialog.ShowInformation("Select Object", "Please select an object to delete.", d.window)
+		dialog.ShowInformation("Select Object", "Please select an object or folder to delete.", d.window)
 		return
 	}
 
-	if obj.IsPrefix {
-		dialog.ShowInformation("Directory", "Deleting common prefix directories directly is not supported.", d.window)
+	if obj.IsPrefix || strings.HasSuffix(obj.Key, "/") {
+		folderName := obj.Key
+		confirmPrompt := container.NewVBox(
+			widget.NewLabel(fmt.Sprintf("Are you sure you want to permanently delete folder '%s' and ALL its contents?", folderName)),
+			widget.NewLabelWithStyle(folderName, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			widget.NewLabel("This action cannot be undone and will recursively delete all objects within this folder."),
+		)
+
+		dialog.ShowCustomConfirm("Confirm Delete Folder", "Delete Folder", "Cancel", confirmPrompt, func(ok bool) {
+			if !ok {
+				return
+			}
+			go func() {
+				ctx := context.Background()
+				oService, err := d.container.CreateObjectService(ctx, acc.Name)
+				if err != nil {
+					dialog.ShowError(err, d.window)
+					return
+				}
+
+				folderPrefix := folderName
+				if !strings.HasSuffix(folderPrefix, "/") {
+					folderPrefix += "/"
+				}
+
+				var subKeys []string
+				continuation := ""
+				for {
+					res, err := oService.ListObjects(ctx, bucket, objectDomain.ObjectFilter{
+						Prefix:       folderPrefix,
+						MaxKeys:      1000,
+						Continuation: continuation,
+					})
+					if err != nil {
+						dialog.ShowError(err, d.window)
+						return
+					}
+					for _, item := range res.Objects {
+						subKeys = append(subKeys, item.Key)
+					}
+					if !res.IsTruncated || res.NextContinuationToken == "" {
+						break
+					}
+					continuation = res.NextContinuationToken
+				}
+
+				if len(subKeys) > 0 {
+					_, err = oService.BatchDeleteObjects(ctx, bucket, subKeys)
+					if err != nil {
+						dialog.ShowError(err, d.window)
+						return
+					}
+				}
+
+				_ = oService.DeleteObject(ctx, bucket, folderPrefix, "")
+				if strings.TrimSuffix(folderPrefix, "/") != folderPrefix {
+					_ = oService.DeleteObject(ctx, bucket, strings.TrimSuffix(folderPrefix, "/"), "")
+				}
+
+				d.selectObject(nil)
+				d.showToast(fmt.Sprintf("Deleted folder '%s'", folderName))
+				d.loadObjects()
+			}()
+		}, d.window)
 		return
 	}
 
@@ -2725,6 +2803,317 @@ func (d *DesktopApp) showDeleteBucketDialog() {
 			d.loadBuckets()
 		}()
 	}, d.window)
+}
+func (d *DesktopApp) showInspectBucketDialog(bucketName string) {
+	d.mu.RLock()
+	acc := d.selectedAccount
+	d.mu.RUnlock()
+
+	if acc == nil || bucketName == "" {
+		dialog.ShowInformation("Inspect Bucket", "Please select an account and bucket.", d.window)
+		return
+	}
+
+	go func() {
+		ctx := context.Background()
+		bService, err := d.container.CreateBucketService(ctx, acc.Name)
+		if err != nil {
+			dialog.ShowError(err, d.window)
+			return
+		}
+
+		location, _ := bService.GetBucketLocation(ctx, bucketName)
+		if location == "" {
+			location = "us-east-1 (or default)"
+		}
+
+		versioning, _ := bService.GetBucketVersioning(ctx, bucketName)
+		versioningStatus := string(versioning.Status)
+		if versioningStatus == "" {
+			versioningStatus = "Disabled / Unversioned"
+		}
+
+		enc, _ := bService.GetBucketEncryption(ctx, bucketName)
+		encStatus := "None"
+		if enc.SSEAlgorithm != "" {
+			encStatus = enc.SSEAlgorithm
+			if enc.KMSMasterKeyID != "" {
+				encStatus += " (KMS Key: " + enc.KMSMasterKeyID + ")"
+			}
+		}
+
+		lifecycle, _ := bService.GetBucketLifecycle(ctx, bucketName)
+		lifecycleStatus := fmt.Sprintf("%d rule(s) configured", len(lifecycle))
+
+		var objCount int
+		var totalSize int64
+		d.mu.RLock()
+		if d.selectedBucket == bucketName {
+			objCount = len(d.objects)
+			for _, o := range d.objects {
+				totalSize += o.Size
+			}
+		}
+		var creationTime string
+		for _, b := range d.buckets {
+			if b.Name == bucketName && !b.CreationDate.IsZero() {
+				creationTime = b.CreationDate.Format("2006-01-02 15:04:05 MST")
+				break
+			}
+		}
+		d.mu.RUnlock()
+
+		if creationTime == "" {
+			creationTime = "Unknown"
+		}
+
+		content := container.NewVBox(
+			widget.NewLabelWithStyle(fmt.Sprintf("Bucket: %s", bucketName), fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			widget.NewSeparator(),
+			widget.NewLabel(fmt.Sprintf("Region: %s", location)),
+			widget.NewLabel(fmt.Sprintf("Created: %s", creationTime)),
+			widget.NewLabel(fmt.Sprintf("Known Objects: %d", objCount)),
+			widget.NewLabel(fmt.Sprintf("Known Size: %s", formatBytes(totalSize))),
+			widget.NewSeparator(),
+			widget.NewLabel(fmt.Sprintf("Versioning: %s", versioningStatus)),
+			widget.NewLabel(fmt.Sprintf("Default Encryption: %s", encStatus)),
+			widget.NewLabel(fmt.Sprintf("Lifecycle: %s", lifecycleStatus)),
+		)
+
+		fyne.Do(func() {
+			dialog.ShowCustom("Bucket Properties & Inspection", "Close", content, d.window)
+		})
+	}()
+}
+
+func (d *DesktopApp) showEditBucketDialog(bucketName string) {
+	d.mu.RLock()
+	acc := d.selectedAccount
+	d.mu.RUnlock()
+
+	if acc == nil || bucketName == "" {
+		dialog.ShowInformation("Edit Bucket", "Please select an account and bucket.", d.window)
+		return
+	}
+
+	go func() {
+		ctx := context.Background()
+		bService, err := d.container.CreateBucketService(ctx, acc.Name)
+		if err != nil {
+			dialog.ShowError(err, d.window)
+			return
+		}
+
+		currentVer, _ := bService.GetBucketVersioning(ctx, bucketName)
+		currentEnc, _ := bService.GetBucketEncryption(ctx, bucketName)
+
+		fyne.Do(func() {
+			verSelect := widget.NewSelect([]string{"Enabled", "Suspended"}, nil)
+			if currentVer.Status == bucketDomain.VersioningStatusEnabled {
+				verSelect.SetSelected("Enabled")
+			} else {
+				verSelect.SetSelected("Suspended")
+			}
+
+			encSelect := widget.NewSelect([]string{"AES256", "aws:kms", "None"}, nil)
+			if currentEnc.SSEAlgorithm != "" {
+				encSelect.SetSelected(currentEnc.SSEAlgorithm)
+			} else {
+				encSelect.SetSelected("None")
+			}
+
+			items := []*widget.FormItem{
+				widget.NewFormItem("Versioning", verSelect),
+				widget.NewFormItem("Default Encryption", encSelect),
+			}
+
+			dialog.ShowForm("Edit Bucket Settings ("+bucketName+")", "Save", "Cancel", items, func(confirmed bool) {
+				if !confirmed {
+					return
+				}
+				go func() {
+					newVerStatus := bucketDomain.VersioningStatus(verSelect.Selected)
+					if newVerStatus != "" {
+						_ = bService.SetBucketVersioning(ctx, bucketName, bucketDomain.VersioningConfig{
+							Status: newVerStatus,
+						})
+					}
+
+					selectedEnc := encSelect.Selected
+					if selectedEnc != "" && selectedEnc != "None" {
+						_ = bService.SetBucketEncryption(ctx, bucketName, bucketDomain.EncryptionConfig{
+							SSEAlgorithm: selectedEnc,
+						})
+					}
+
+					d.showToast(fmt.Sprintf("Updated settings for bucket '%s'", bucketName))
+				}()
+			}, d.window)
+		})
+	}()
+}
+
+func (d *DesktopApp) showEmptyBucketDialog(bucketName string) {
+	d.mu.RLock()
+	acc := d.selectedAccount
+	d.mu.RUnlock()
+
+	if acc == nil || bucketName == "" {
+		dialog.ShowInformation("Empty Bucket", "Please select an account and bucket.", d.window)
+		return
+	}
+
+	confirmPrompt := container.NewVBox(
+		widget.NewLabel("Are you sure you want to delete ALL objects from bucket:"),
+		widget.NewLabelWithStyle(bucketName, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewLabel("This will permanently delete all objects and folders without deleting the bucket itself."),
+		widget.NewLabel("This action cannot be undone."),
+	)
+
+	dialog.ShowCustomConfirm("Empty Bucket", "Empty Bucket", "Cancel", confirmPrompt, func(ok bool) {
+		if !ok {
+			return
+		}
+		go func() {
+			ctx := context.Background()
+			oService, err := d.container.CreateObjectService(ctx, acc.Name)
+			if err != nil {
+				dialog.ShowError(err, d.window)
+				return
+			}
+
+			var deletedCount int
+			continuation := ""
+			for {
+				res, err := oService.ListObjects(ctx, bucketName, objectDomain.ObjectFilter{
+					MaxKeys:      1000,
+					Continuation: continuation,
+				})
+				if err != nil {
+					dialog.ShowError(err, d.window)
+					return
+				}
+
+				var keys []string
+				for _, obj := range res.Objects {
+					keys = append(keys, obj.Key)
+				}
+
+				if len(keys) > 0 {
+					dKeys, err := oService.BatchDeleteObjects(ctx, bucketName, keys)
+					if err != nil {
+						dialog.ShowError(err, d.window)
+						return
+					}
+					deletedCount += len(dKeys)
+				}
+
+				if !res.IsTruncated || res.NextContinuationToken == "" {
+					break
+				}
+				continuation = res.NextContinuationToken
+			}
+
+			d.showToast(fmt.Sprintf("Emptied bucket '%s' (%d object(s) removed)", bucketName, deletedCount))
+			d.mu.RLock()
+			currentSelected := d.selectedBucket
+			d.mu.RUnlock()
+			if currentSelected == bucketName {
+				d.loadObjects()
+			}
+		}()
+	}, d.window)
+}
+
+func (d *DesktopApp) showDeleteBucketNamedDialog(bucketName string) {
+	d.mu.RLock()
+	acc := d.selectedAccount
+	d.mu.RUnlock()
+
+	if acc == nil || bucketName == "" {
+		dialog.ShowInformation("Delete Bucket", "Please select a bucket to delete.", d.window)
+		return
+	}
+
+	confirmPrompt := container.NewVBox(
+		widget.NewLabel("Are you sure you want to delete bucket:"),
+		widget.NewLabelWithStyle(bucketName, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewLabel("All contained objects must already be deleted."),
+	)
+
+	dialog.ShowCustomConfirm("Confirm Delete Bucket", "Delete Bucket", "Cancel", confirmPrompt, func(ok bool) {
+		if !ok {
+			return
+		}
+		go func() {
+			ctx := context.Background()
+			bService, err := d.container.CreateBucketService(ctx, acc.Name)
+			if err != nil {
+				dialog.ShowError(err, d.window)
+				return
+			}
+
+			err = bService.DeleteBucket(ctx, bucketName)
+			if err != nil {
+				dialog.ShowError(err, d.window)
+				return
+			}
+
+			d.mu.Lock()
+			if d.selectedBucket == bucketName {
+				d.selectedBucket = ""
+			}
+			d.mu.Unlock()
+			if d.bucketBadge != nil {
+				d.bucketBadge.SetText("No Bucket Selected")
+			}
+			d.updateBreadcrumbs()
+			d.showToast(fmt.Sprintf("Bucket '%s' deleted", bucketName))
+			d.loadBuckets()
+		}()
+	}, d.window)
+}
+
+func (d *DesktopApp) showBucketContextMenu(bucketName string, pos fyne.Position) {
+	if bucketName == "" {
+		return
+	}
+	d.selectBucket(bucketName)
+
+	inspectItem := fyne.NewMenuItem("Inspect Bucket / Properties", func() {
+		d.showInspectBucketDialog(bucketName)
+	})
+	inspectItem.Icon = theme.InfoIcon()
+
+	editItem := fyne.NewMenuItem("Edit Bucket / Settings", func() {
+		d.showEditBucketDialog(bucketName)
+	})
+	editItem.Icon = theme.SettingsIcon()
+
+	emptyItem := fyne.NewMenuItem("Empty Bucket", func() {
+		d.showEmptyBucketDialog(bucketName)
+	})
+	emptyItem.Icon = theme.ContentClearIcon()
+
+	deleteItem := fyne.NewMenuItem("Delete Bucket", func() {
+		d.showDeleteBucketNamedDialog(bucketName)
+	})
+	deleteItem.Icon = theme.DeleteIcon()
+
+	menu := fyne.NewMenu(bucketName, inspectItem, editItem, emptyItem, fyne.NewMenuItemSeparator(), deleteItem)
+	popUp := widget.NewPopUpMenu(menu, d.window.Canvas())
+	popUp.ShowAtPosition(pos)
+}
+type bucketListItemContainer struct {
+	*fyne.Container
+	bucketName  string
+	onSecondary func(bucketName string, pos fyne.Position)
+}
+
+func (b *bucketListItemContainer) TappedSecondary(pe *fyne.PointEvent) {
+	if b.onSecondary != nil && b.bucketName != "" {
+		b.onSecondary(b.bucketName, pe.AbsolutePosition)
+	}
 }
 
 func (d *DesktopApp) showAddAccountDialog() {

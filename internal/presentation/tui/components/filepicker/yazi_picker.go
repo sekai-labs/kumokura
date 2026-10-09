@@ -76,11 +76,19 @@ func NewYaziPicker(startDir string, bucket string, prefix string, s styles.Style
 		startDir = abs
 	}
 
+	normPrefix := filepath.ToSlash(filepath.Clean(prefix))
+	if normPrefix == "." || normPrefix == "/" {
+		normPrefix = ""
+	}
+	if normPrefix != "" && !strings.HasSuffix(normPrefix, "/") {
+		normPrefix += "/"
+	}
+
 	yp := YaziPicker{
 		CurrentDir:    startDir,
 		SelectedPaths: make(map[string]bool),
 		TargetBucket:  bucket,
-		TargetPrefix:  prefix,
+		TargetPrefix:  normPrefix,
 		styles:        s,
 	}
 	yp.Refresh()
