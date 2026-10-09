@@ -36,13 +36,16 @@ func (v *HelpView) Render(width, height int) string {
 		"  /                   Open live fuzzy search filter input",
 		"",
 		"Object & Transfer Actions:",
+		"  Space               Toggle selection on highlighted object or folder (multi-select)",
+		"  a / Ctrl+A          Select all visible objects and folders",
+		"  c                   Clear all selections",
 		"  u                   Upload a file or directory from local disk to current prefix",
 		"  d                   Download selected object(s) or folder to local filesystem",
-		"  x, Delete           Prompt confirmation to delete selected object or bucket",
-		"  p                   Generate presigned URL dialog (configurable expiration, OSC 52)",
+		"  x, Delete           Prompt confirmation to delete selected object(s) or folder",
+		"  p                   Generate presigned URL(s) (configurable expiration, OSC 52)",
+		"  o                   Open highlighted/selected image or video in system viewer/player",
 		"  i                   Toggle Object Metadata & Tags Inspector Drawer",
 	}
-
 	innerW := width - 4
 	if innerW < 20 {
 		innerW = 20

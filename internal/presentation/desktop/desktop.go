@@ -6,19 +6,20 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
-
 	accountDomain "github.com/sekai-labs/kumokura/internal/accounts/domain"
 	accountPorts "github.com/sekai-labs/kumokura/internal/accounts/ports"
 	"github.com/sekai-labs/kumokura/internal/bootstrap"
@@ -88,10 +89,14 @@ type DesktopApp struct {
 	presignedLabel *widget.Entry
 	tagsLabel      *widget.Label
 	previewBtn     *widget.Button
+	openExternalBtn *widget.Button
 
 	previewContentEntry *widget.Entry
+	previewImage        *canvas.Image
+	previewImageWrap    *fyne.Container
+	previewVideoBadge   *widget.Label
+	previewVideoBox     *fyne.Container
 	previewStatusLabel  *widget.Label
-
 	inspectorSplit *container.Split
 	inspectorOpen  bool
 
@@ -381,15 +386,14 @@ func (d *DesktopApp) buildLeftPanel() fyne.CanvasObject {
 		func() fyne.CanvasObject {
 			icon := widget.NewIcon(theme.AccountIcon())
 			name := widget.NewLabel("Account Placeholder")
-			name.Truncation = fyne.TextTruncateEllipsis
-			return container.NewHBox(icon, name)
+			return container.NewBorder(nil, nil, icon, nil, name)
 		},
 		func(id widget.ListItemID, obj fyne.CanvasObject) {
 			d.mu.RLock()
 			defer d.mu.RUnlock()
 			if id < len(d.accounts) {
 				box := obj.(*fyne.Container)
-				lbl := box.Objects[1].(*widget.Label)
+				lbl := box.Objects[0].(*widget.Label)
 				acc := d.accounts[id]
 				selectedMark := ""
 				if d.selectedAccount != nil && d.selectedAccount.ID == acc.ID {
@@ -452,8 +456,7 @@ func (d *DesktopApp) buildLeftPanel() fyne.CanvasObject {
 		func() fyne.CanvasObject {
 			icon := widget.NewIcon(theme.StorageIcon())
 			name := widget.NewLabel("Bucket Placeholder")
-			name.Truncation = fyne.TextTruncateEllipsis
-			return container.NewHBox(icon, name)
+			return container.NewBorder(nil, nil, icon, nil, name)
 		},
 		func(id widget.ListItemID, obj fyne.CanvasObject) {
 			filtered := d.getFilteredBuckets()
@@ -462,7 +465,7 @@ func (d *DesktopApp) buildLeftPanel() fyne.CanvasObject {
 			d.mu.RUnlock()
 			if id < len(filtered) {
 				box := obj.(*fyne.Container)
-				lbl := box.Objects[1].(*widget.Label)
+				lbl := box.Objects[0].(*widget.Label)
 				b := filtered[id]
 				selectedMark := ""
 				if b.Name == selectedName {
@@ -585,12 +588,12 @@ func (d *DesktopApp) buildCenterPanel() fyne.CanvasObject {
 			icon := widget.NewIcon(theme.FileIcon())
 			lbl := widget.NewLabel("Cell text placeholder")
 			lbl.Truncation = fyne.TextTruncateEllipsis
-			return container.NewHBox(icon, lbl)
+			return container.NewBorder(nil, nil, icon, nil, lbl)
 		},
 		func(id widget.TableCellID, cell fyne.CanvasObject) {
 			box := cell.(*fyne.Container)
-			icon := box.Objects[0].(*widget.Icon)
-			lbl := box.Objects[1].(*widget.Label)
+			lbl := box.Objects[0].(*widget.Label)
+			icon := box.Objects[1].(*widget.Icon)
 
 			if id.Row == 0 {
 				icon.Hide()
@@ -808,6 +811,11 @@ func (d *DesktopApp) buildRightPanel() fyne.CanvasObject {
 		d.previewSelectedObject()
 	})
 
+	d.openExternalBtn = widget.NewButtonWithIcon("Open External", theme.MediaPlayIcon(), func() {
+		d.openSelectedExternal()
+	})
+	d.openExternalBtn.Disable()
+
 	d.previewStatusLabel = widget.NewLabel("Click 'Preview Object' or double-click to view content.")
 	d.previewStatusLabel.Wrapping = fyne.TextWrapWord
 	d.previewStatusLabel.TextStyle = fyne.TextStyle{Italic: true}
@@ -819,6 +827,31 @@ func (d *DesktopApp) buildRightPanel() fyne.CanvasObject {
 
 	previewScroll := container.NewGridWrap(fyne.NewSize(240, 160), d.previewContentEntry)
 
+	d.previewImage = canvas.NewImageFromResource(theme.FileIcon())
+	d.previewImage.FillMode = canvas.ImageFillContain
+	d.previewImage.SetMinSize(fyne.NewSize(240, 160))
+	d.previewImageWrap = container.NewGridWrap(fyne.NewSize(240, 160), d.previewImage)
+	d.previewImageWrap.Hide()
+
+	d.previewVideoBadge = widget.NewLabelWithStyle("🎬 Video detected", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
+	playVideoBtn := widget.NewButtonWithIcon("▶ Open Video in System Player", theme.MediaPlayIcon(), func() {
+		d.openSelectedExternal()
+	})
+	playVideoBtn.Importance = widget.HighImportance
+	d.previewVideoBox = container.NewVBox(
+		d.previewVideoBadge,
+		playVideoBtn,
+	)
+	d.previewVideoBox.Hide()
+
+	previewContainer := container.NewVBox(
+		container.NewHBox(d.previewBtn, d.openExternalBtn),
+		d.previewStatusLabel,
+		d.previewImageWrap,
+		d.previewVideoBox,
+		previewScroll,
+	)
+
 	detailsContent := container.NewVBox(
 		widget.NewLabelWithStyle("File Summary", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		d.metadataLabel,
@@ -826,9 +859,7 @@ func (d *DesktopApp) buildRightPanel() fyne.CanvasObject {
 		quickActions,
 		widget.NewSeparator(),
 		widget.NewLabelWithStyle("Content Preview", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		container.NewHBox(d.previewBtn),
-		d.previewStatusLabel,
-		previewScroll,
+		previewContainer,
 		widget.NewSeparator(),
 		widget.NewLabelWithStyle("Presigned URL", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		presignedBox,
@@ -872,7 +903,6 @@ func (d *DesktopApp) buildBottomPanel() fyne.CanvasObject {
 		func() fyne.CanvasObject {
 			icon := widget.NewIcon(theme.UploadIcon())
 			nameLabel := widget.NewLabel("Job Name")
-			nameLabel.Truncation = fyne.TextTruncateEllipsis
 			statusLabel := widget.NewLabel("Status")
 			progress := widget.NewProgressBar()
 			leftBox := container.NewHBox(icon, nameLabel)
@@ -1500,6 +1530,15 @@ func (d *DesktopApp) selectObject(obj *objectDomain.Object) {
 		if d.previewContentEntry != nil {
 			d.previewContentEntry.SetText("")
 		}
+		if d.previewImageWrap != nil {
+			d.previewImageWrap.Hide()
+		}
+		if d.previewVideoBox != nil {
+			d.previewVideoBox.Hide()
+		}
+		if d.openExternalBtn != nil {
+			d.openExternalBtn.Disable()
+		}
 		return
 	}
 
@@ -1518,6 +1557,15 @@ func (d *DesktopApp) selectObject(obj *objectDomain.Object) {
 		}
 		if d.previewContentEntry != nil {
 			d.previewContentEntry.SetText("")
+		}
+		if d.previewImageWrap != nil {
+			d.previewImageWrap.Hide()
+		}
+		if d.previewVideoBox != nil {
+			d.previewVideoBox.Hide()
+		}
+		if d.openExternalBtn != nil {
+			d.openExternalBtn.Disable()
 		}
 		return
 	}
@@ -1542,13 +1590,34 @@ func (d *DesktopApp) selectObject(obj *objectDomain.Object) {
 	if d.presignedLabel != nil {
 		d.presignedLabel.SetText("")
 	}
+	if d.openExternalBtn != nil {
+		d.openExternalBtn.Enable()
+	}
+	if d.previewImageWrap != nil {
+		d.previewImageWrap.Hide()
+	}
+	if d.previewVideoBox != nil {
+		if isVideoFile(obj.Key) {
+			if d.previewVideoBadge != nil {
+				d.previewVideoBadge.SetText(fmt.Sprintf("🎬 Video: %s (%s)", filepath.Base(obj.Key), formatBytes(obj.Size)))
+			}
+			d.previewVideoBox.Show()
+		} else {
+			d.previewVideoBox.Hide()
+		}
+	}
 	if d.previewStatusLabel != nil {
-		d.previewStatusLabel.SetText(fmt.Sprintf("Ready to preview %s (%s)", filepath.Base(obj.Key), formatBytes(obj.Size)))
+		if isImageFile(obj.Key) {
+			d.previewStatusLabel.SetText(fmt.Sprintf("Image detected: %s (%s). Click Preview to render.", filepath.Base(obj.Key), formatBytes(obj.Size)))
+		} else if isVideoFile(obj.Key) {
+			d.previewStatusLabel.SetText(fmt.Sprintf("Video detected: %s (%s). Click 'Open Video' to play in system player.", filepath.Base(obj.Key), formatBytes(obj.Size)))
+		} else {
+			d.previewStatusLabel.SetText(fmt.Sprintf("Ready to preview %s (%s)", filepath.Base(obj.Key), formatBytes(obj.Size)))
+		}
 	}
 	if d.previewContentEntry != nil {
 		d.previewContentEntry.SetText("")
 	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	d.mu.Lock()
 	d.inspectCancel = cancel
@@ -1640,6 +1709,112 @@ func (d *DesktopApp) fetchObjectDetailsAndTags(ctx context.Context, key string) 
 	})
 }
 
+func isImageFile(key string) bool {
+	ext := strings.ToLower(filepath.Ext(key))
+	switch ext {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg":
+		return true
+	default:
+		return false
+	}
+}
+
+func isVideoFile(key string) bool {
+	ext := strings.ToLower(filepath.Ext(key))
+	switch ext {
+	case ".mp4", ".mkv", ".webm", ".avi", ".mov", ".flv":
+		return true
+	default:
+		return false
+	}
+}
+
+func openFileWithSystemApp(path string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("cmd.exe", "/c", "start", "", path)
+	case "darwin":
+		cmd = exec.Command("open", path)
+	default:
+		cmd = exec.Command("xdg-open", path)
+	}
+	return cmd.Start()
+}
+
+func (d *DesktopApp) openSelectedExternal() {
+	d.mu.RLock()
+	acc := d.selectedAccount
+	bucket := d.selectedBucket
+	obj := d.selectedObject
+	d.mu.RUnlock()
+
+	if acc == nil || bucket == "" || obj == nil {
+		dialog.ShowInformation("Select Object", "Please select an object to open externally.", d.window)
+		return
+	}
+	if obj.IsPrefix {
+		d.openSelectedFolder()
+		return
+	}
+
+	key := obj.Key
+	d.showToast(fmt.Sprintf("Downloading %s to open externally...", filepath.Base(key)))
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+
+		oService, err := d.container.CreateObjectService(ctx, acc.Name)
+		if err != nil {
+			fyne.Do(func() {
+				dialog.ShowError(err, d.window)
+			})
+			return
+		}
+
+		content, err := oService.GetObject(ctx, bucket, key, "")
+		if err != nil {
+			fyne.Do(func() {
+				dialog.ShowError(err, d.window)
+			})
+			return
+		}
+		defer content.Body.Close()
+
+		ext := filepath.Ext(key)
+		tmpFile, err := os.CreateTemp("", "kumokura-open-*"+ext)
+		if err != nil {
+			fyne.Do(func() {
+				dialog.ShowError(fmt.Errorf("create temp file: %w", err), d.window)
+			})
+			return
+		}
+		tmpPath := tmpFile.Name()
+
+		_, copyErr := io.Copy(tmpFile, content.Body)
+		_ = tmpFile.Close()
+		if copyErr != nil {
+			_ = os.Remove(tmpPath)
+			fyne.Do(func() {
+				dialog.ShowError(fmt.Errorf("write temp file: %w", copyErr), d.window)
+			})
+			return
+		}
+
+		if err := openFileWithSystemApp(tmpPath); err != nil {
+			fyne.Do(func() {
+				dialog.ShowError(fmt.Errorf("open file in external viewer: %w", err), d.window)
+			})
+			return
+		}
+
+		fyne.Do(func() {
+			d.showToast("Opened " + filepath.Base(key) + " in external viewer")
+		})
+	}()
+}
+
 func (d *DesktopApp) previewSelectedObject() {
 	d.mu.RLock()
 	acc := d.selectedAccount
@@ -1662,7 +1837,7 @@ func (d *DesktopApp) previewSelectedObject() {
 		d.previewStatusLabel.SetText("Fetching preview...")
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
 		oService, err := d.container.CreateObjectService(ctx, acc.Name)
@@ -1687,6 +1862,68 @@ func (d *DesktopApp) previewSelectedObject() {
 			return
 		}
 		defer content.Body.Close()
+
+		if isImageFile(key) {
+			const maxImageBytes = 10 * 1024 * 1024
+			imgData, readErr := io.ReadAll(io.LimitReader(content.Body, maxImageBytes))
+			if readErr != nil {
+				fyne.Do(func() {
+					if d.previewStatusLabel != nil {
+						d.previewStatusLabel.SetText("Failed to read image data")
+					}
+					dialog.ShowError(readErr, d.window)
+				})
+				return
+			}
+
+			statusDesc := fmt.Sprintf("Image (%s): %s rendered", formatBytes(int64(len(imgData))), filepath.Base(key))
+			res := fyne.NewStaticResource(filepath.Base(key), imgData)
+
+			fyne.Do(func() {
+				d.mu.RLock()
+				cur := d.selectedObject
+				d.mu.RUnlock()
+				if cur != nil && cur.Key == key {
+					if d.previewStatusLabel != nil {
+						d.previewStatusLabel.SetText(statusDesc)
+					}
+					if d.previewImage != nil {
+						d.previewImage.Resource = res
+						d.previewImage.Refresh()
+					}
+					if d.previewImageWrap != nil {
+						d.previewImageWrap.Show()
+					}
+					if d.previewContentEntry != nil {
+						d.previewContentEntry.SetText("")
+					}
+				}
+				d.showImagePreviewDialog(key, res)
+			})
+			return
+		}
+
+		if isVideoFile(key) {
+			statusDesc := fmt.Sprintf("Video (%s): %s", formatBytes(obj.Size), filepath.Base(key))
+			fyne.Do(func() {
+				d.mu.RLock()
+				cur := d.selectedObject
+				d.mu.RUnlock()
+				if cur != nil && cur.Key == key {
+					if d.previewStatusLabel != nil {
+						d.previewStatusLabel.SetText(statusDesc)
+					}
+					if d.previewVideoBox != nil {
+						if d.previewVideoBadge != nil {
+							d.previewVideoBadge.SetText(fmt.Sprintf("🎬 Video: %s (%s)", filepath.Base(key), formatBytes(obj.Size)))
+						}
+						d.previewVideoBox.Show()
+					}
+				}
+				d.showVideoPreviewDialog(key, obj.Size)
+			})
+			return
+		}
 
 		const maxPreviewBytes = 64 * 1024
 		buf := make([]byte, maxPreviewBytes)
@@ -1743,6 +1980,12 @@ func (d *DesktopApp) previewSelectedObject() {
 				if d.previewStatusLabel != nil {
 					d.previewStatusLabel.SetText(statusDesc)
 				}
+				if d.previewImageWrap != nil {
+					d.previewImageWrap.Hide()
+				}
+				if d.previewVideoBox != nil {
+					d.previewVideoBox.Hide()
+				}
 				if d.previewContentEntry != nil {
 					d.previewContentEntry.SetText(previewText)
 				}
@@ -1750,6 +1993,57 @@ func (d *DesktopApp) previewSelectedObject() {
 			d.showPreviewDialog(key, statusDesc, previewText)
 		})
 	}()
+}
+
+func (d *DesktopApp) showImagePreviewDialog(key string, res fyne.Resource) {
+	title := fmt.Sprintf("Image Preview: %s", filepath.Base(key))
+	img := canvas.NewImageFromResource(res)
+	img.FillMode = canvas.ImageFillContain
+	img.SetMinSize(fyne.NewSize(640, 440))
+
+	openExtBtn := widget.NewButtonWithIcon("Open in System Viewer", theme.MediaPlayIcon(), func() {
+		d.openSelectedExternal()
+	})
+	openExtBtn.Importance = widget.HighImportance
+
+	contentBox := container.NewBorder(
+		nil,
+		openExtBtn,
+		nil,
+		nil,
+		container.NewGridWrap(fyne.NewSize(680, 460), img),
+	)
+
+	dModal := dialog.NewCustom(title, "Close", contentBox, d.window)
+	dModal.Resize(fyne.NewSize(720, 560))
+	dModal.Show()
+}
+
+func (d *DesktopApp) showVideoPreviewDialog(key string, size int64) {
+	title := fmt.Sprintf("Video: %s", filepath.Base(key))
+	infoLabel := widget.NewLabel(fmt.Sprintf("Format: %s\nSize: %s (%d bytes)\nKey: %s",
+		strings.ToUpper(strings.TrimPrefix(filepath.Ext(key), ".")),
+		formatBytes(size),
+		size,
+		key,
+	))
+	infoLabel.TextStyle = fyne.TextStyle{Monospace: true}
+
+	playBtn := widget.NewButtonWithIcon("▶ Open Video in System Player", theme.MediaPlayIcon(), func() {
+		d.openSelectedExternal()
+	})
+	playBtn.Importance = widget.HighImportance
+
+	contentBox := container.NewVBox(
+		widget.NewLabelWithStyle("Video File Details", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		infoLabel,
+		widget.NewSeparator(),
+		playBtn,
+	)
+
+	dModal := dialog.NewCustom(title, "Close", contentBox, d.window)
+	dModal.Resize(fyne.NewSize(520, 260))
+	dModal.Show()
 }
 
 func (d *DesktopApp) showPreviewDialog(key, statusDesc, previewText string) {
@@ -1766,9 +2060,15 @@ func (d *DesktopApp) showPreviewDialog(key, statusDesc, previewText string) {
 		d.showToast("Preview content copied to clipboard")
 	})
 
+	openExtBtn := widget.NewButtonWithIcon("Open External", theme.MediaPlayIcon(), func() {
+		d.openSelectedExternal()
+	})
+
+	bottomBar := container.NewHBox(copyBtn, openExtBtn)
+
 	contentBox := container.NewBorder(
 		descLabel,
-		copyBtn,
+		bottomBar,
 		nil,
 		nil,
 		container.NewGridWrap(fyne.NewSize(680, 420), entry),

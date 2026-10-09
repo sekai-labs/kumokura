@@ -258,3 +258,77 @@ func TestTUI_FolderMarkerNavigationAndPreviewClear(t *testing.T) {
 	uH := mH.(Model)
 	assert.Equal(t, "", uH.explorerView.CurrentPrefix)
 }
+
+func TestTUI_MultiSelectAndBulkActions(t *testing.T) {
+	model := NewModel(Services{})
+	model.activeTab = 1
+	model.explorerView.ActivePaneIndex = 1
+	model.activeBucket = "test-b"
+	model.explorerView.ActiveBucket = "test-b"
+	model.explorerView.Objects = []objDomain.Object{
+		{Key: "item1.jpg", Size: 100},
+		{Key: "item2.png", Size: 200},
+		{Key: "item3.txt", Size: 300},
+	}
+
+	// Test Space selection toggle
+	model.explorerView.SelectedObject = 0
+	m1, _ := model.Update(tea.KeyMsg{Type: tea.KeySpace})
+	u1 := m1.(Model)
+	assert.True(t, u1.explorerView.SelectedKeys["item1.jpg"])
+
+	// Toggle it off
+	m2, _ := u1.Update(tea.KeyMsg{Type: tea.KeySpace})
+	u2 := m2.(Model)
+	assert.False(t, u2.explorerView.SelectedKeys["item1.jpg"])
+
+	// Select all ('a')
+	mAll, _ := u2.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	uAll := mAll.(Model)
+	assert.True(t, uAll.explorerView.SelectedKeys["item1.jpg"])
+	assert.True(t, uAll.explorerView.SelectedKeys["item2.png"])
+	assert.True(t, uAll.explorerView.SelectedKeys["item3.txt"])
+
+	// Clear selection ('c')
+	mClear, _ := uAll.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	uClear := mClear.(Model)
+	assert.Empty(t, uClear.explorerView.SelectedKeys)
+
+	// Bulk Delete prompt ('x')
+	uAll.explorerView.SelectedKeys = map[string]bool{"item1.jpg": true, "item2.png": true}
+	mDel, _ := uAll.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	uDel := mDel.(Model)
+	assert.True(t, uDel.showDeleteModal)
+	assert.Len(t, uDel.deleteTargetKeys, 2)
+	viewDel := uDel.View()
+	assert.Contains(t, viewDel, "Permanently delete 2 selected objects?")
+
+	// Bulk Download modal ('d')
+	mDl, _ := uAll.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	uDl := mDl.(Model)
+	assert.True(t, uDl.downloadModal.Active)
+	assert.Len(t, uDl.downloadTargets, 2)
+
+	// Bulk Presign modal ('p')
+	mP, _ := uAll.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	uP := mP.(Model)
+	assert.True(t, uP.presignModal.Active)
+	assert.Len(t, uP.presignTargetKeys, 2)
+}
+
+func TestTUI_OpenMediaKey(t *testing.T) {
+	model := NewModel(Services{})
+	model.activeTab = 1
+	model.explorerView.ActivePaneIndex = 1
+	model.activeBucket = "test-b"
+	model.explorerView.ActiveBucket = "test-b"
+	model.explorerView.Objects = []objDomain.Object{
+		{Key: "video.mp4", Size: 1048576},
+	}
+	model.explorerView.SelectedObject = 0
+
+	mOpen, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	uOpen := mOpen.(Model)
+	assert.NotNil(t, cmd)
+	assert.Contains(t, uOpen.notification, "Opening video.mp4 with system player")
+}

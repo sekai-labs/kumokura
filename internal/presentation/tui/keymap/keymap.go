@@ -27,7 +27,11 @@ type KeyMap struct {
 	Refresh      key.Binding
 	Help         key.Binding
 	Quit         key.Binding
-	Escape       key.Binding
+	Escape         key.Binding
+	Select         key.Binding
+	SelectAll      key.Binding
+	ClearSelect    key.Binding
+	OpenMedia      key.Binding
 }
 
 var DefaultKeyMap = KeyMap{
@@ -122,5 +126,21 @@ var DefaultKeyMap = KeyMap{
 	Escape: key.NewBinding(
 		key.WithKeys("esc"),
 		key.WithHelp("esc", "cancel/close"),
+	),
+	Select: key.NewBinding(
+		key.WithKeys(" "),
+		key.WithHelp("space", "toggle select"),
+	),
+	SelectAll: key.NewBinding(
+		key.WithKeys("a", "ctrl+a"),
+		key.WithHelp("a/C-a", "select all"),
+	),
+	ClearSelect: key.NewBinding(
+		key.WithKeys("c"),
+		key.WithHelp("c", "clear selection"),
+	),
+	OpenMedia: key.NewBinding(
+		key.WithKeys("o"),
+		key.WithHelp("o", "open media"),
 	),
 }

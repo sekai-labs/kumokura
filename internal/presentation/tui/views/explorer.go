@@ -3,9 +3,17 @@ package views
 import (
 	"bytes"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
+	"path/filepath"
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	_ "golang.org/x/image/bmp"
+	_ "golang.org/x/image/webp"
 
 	"github.com/charmbracelet/lipgloss"
 	bucketDomain "github.com/sekai-labs/kumokura/internal/buckets/domain"
@@ -23,12 +31,14 @@ type ExplorerView struct {
 	SelectedObject  int
 	ObjectOffset    int
 	CurrentPrefix   string
+	PreviewKey      string
 	PreviewMetadata *objDomain.ObjectMetadata
 	PreviewTags     []objDomain.ObjectTag
 	PreviewContent  []byte
 	PreviewScroll   int
 	ShowPreview     bool
 	ActivePaneIndex int
+	SelectedKeys    map[string]bool
 	styles          styles.Styles
 }
 
@@ -36,6 +46,7 @@ func NewExplorerView(s styles.Styles) ExplorerView {
 	return ExplorerView{
 		ShowPreview:     true,
 		ActivePaneIndex: 1,
+		SelectedKeys:    make(map[string]bool),
 		styles:          s,
 	}
 }
@@ -287,10 +298,18 @@ func (v ExplorerView) renderCenterPanel(width, height int) string {
 	} else {
 		prefixLen := len(v.Prefixes)
 		endIdx := min(totalItems, objectOffset+maxItems)
+		hasSelected := len(v.SelectedKeys) > 0
+		showMultiMarker := v.ShowPreview || hasSelected
+
 		for i := objectOffset; i < endIdx; i++ {
 			var display string
+			var itemKey string
+			var isDir bool
+
 			if i < prefixLen {
 				p := v.Prefixes[i]
+				itemKey = p.Prefix
+				isDir = true
 				name := p.Prefix
 				if v.CurrentPrefix != "" {
 					name = strings.TrimPrefix(name, v.CurrentPrefix)
@@ -300,7 +319,16 @@ func (v ExplorerView) renderCenterPanel(width, height int) string {
 					maxNameW = 8
 				}
 				name = truncateString(name, maxNameW)
-				iconAndName := fmt.Sprintf("📁 %s", padVisual(name, maxNameW, false))
+
+				var marker string
+				if showMultiMarker {
+					if v.SelectedKeys[itemKey] {
+						marker = "[x] "
+					} else {
+						marker = "[ ] "
+					}
+				}
+				iconAndName := fmt.Sprintf("%s📁 %s", marker, padVisual(name, maxNameW, false))
 
 				if showStorageClass {
 					display = fmt.Sprintf("%s %s %s %s",
@@ -324,6 +352,8 @@ func (v ExplorerView) renderCenterPanel(width, height int) string {
 			} else {
 				objIdx := i - prefixLen
 				obj := visibleObjects[objIdx]
+				itemKey = obj.Key
+				isDir = false
 				name := obj.Key
 				if v.CurrentPrefix != "" {
 					name = strings.TrimPrefix(name, v.CurrentPrefix)
@@ -343,7 +373,16 @@ func (v ExplorerView) renderCenterPanel(width, height int) string {
 					nameWidth = 8
 				}
 				name = truncateString(name, nameWidth)
-				iconAndName := fmt.Sprintf("📄 %s", padVisual(name, nameWidth, false))
+
+				var marker string
+				if showMultiMarker {
+					if v.SelectedKeys[itemKey] {
+						marker = "[x] "
+					} else {
+						marker = "[ ] "
+					}
+				}
+				iconAndName := fmt.Sprintf("%s📄 %s", marker, padVisual(name, nameWidth, false))
 
 				if showStorageClass {
 					display = fmt.Sprintf("%s %s %s %s",
@@ -366,6 +405,7 @@ func (v ExplorerView) renderCenterPanel(width, height int) string {
 				}
 			}
 
+			_ = isDir
 			var rowStr string
 			rowStyle := v.styles.NormalRow
 			prefixBadge := "   "
@@ -441,12 +481,26 @@ func (v ExplorerView) renderRightPanel(width, height int) string {
 
 		if len(v.PreviewContent) > 0 {
 			lines = append(lines, "")
-			lines = append(lines, v.styles.PanelTitle.Render("PREVIEW:"))
-			sanitizedLines := SanitizePreviewContent(v.PreviewContent, width-4, 15)
-			for _, sl := range sanitizedLines {
-				lines = append(lines, v.styles.StatusDesc.Render(sl))
+			targetName := v.PreviewKey
+			if IsVideoFile(targetName) {
+				lines = append(lines, v.styles.PanelTitle.Render("MEDIA PREVIEW:"))
+				lines = append(lines, renderVideoPreview(targetName, v.PreviewMetadata, width-4)...)
+			} else if IsImageFile(targetName) {
+				lines = append(lines, v.styles.PanelTitle.Render("IMAGE PREVIEW:"))
+				lines = append(lines, renderImagePreview(v.PreviewContent, targetName, v.PreviewMetadata, width-4, 12)...)
+			} else {
+				lines = append(lines, v.styles.PanelTitle.Render("PREVIEW:"))
+				sanitizedLines := SanitizePreviewContent(v.PreviewContent, width-4, 15)
+				for _, sl := range sanitizedLines {
+					lines = append(lines, v.styles.StatusDesc.Render(sl))
+				}
 			}
+		} else if v.PreviewMetadata != nil && IsVideoFile(v.PreviewKey) {
+			lines = append(lines, "")
+			lines = append(lines, v.styles.PanelTitle.Render("MEDIA PREVIEW:"))
+			lines = append(lines, renderVideoPreview(v.PreviewKey, v.PreviewMetadata, width-4)...)
 		}
+
 	} else {
 		emptyCard := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -460,8 +514,9 @@ func (v ExplorerView) renderRightPanel(width, height int) string {
 		lines = append(lines, v.styles.StatusDesc.Render("[u] Upload file or folder"))
 		lines = append(lines, v.styles.StatusDesc.Render("[d] Download object or folder"))
 		lines = append(lines, v.styles.StatusDesc.Render("[x] Delete selected object"))
+		lines = append(lines, v.styles.StatusDesc.Render("[Space] Toggle selection"))
+		lines = append(lines, v.styles.StatusDesc.Render("[o] Open in external viewer/player"))
 	}
-
 	content := lipgloss.JoinVertical(lipgloss.Left, title, strings.Join(lines, "\n"))
 	style := v.styles.InactivePanel
 	if isActive {
@@ -612,4 +667,140 @@ func formatBytes(bytes int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+func IsImageFile(name string) bool {
+	ext := strings.ToLower(filepath.Ext(name))
+	switch ext {
+	case ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg":
+		return true
+	default:
+		return false
+	}
+}
+
+func IsVideoFile(name string) bool {
+	ext := strings.ToLower(filepath.Ext(name))
+	switch ext {
+	case ".mp4", ".mkv", ".webm", ".avi", ".mov":
+		return true
+	default:
+		return false
+	}
+}
+
+func renderVideoPreview(name string, meta *objDomain.ObjectMetadata, maxWidth int) []string {
+	var lines []string
+	ext := strings.ToUpper(strings.TrimPrefix(filepath.Ext(name), "."))
+	if ext == "" {
+		ext = "VIDEO"
+	}
+	badge := fmt.Sprintf("🎬 VIDEO [%s]", ext)
+	badgeRendered := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#06B6D4")).
+		Background(lipgloss.Color("#1E293B")).
+		Padding(0, 1).
+		Render(badge)
+	lines = append(lines, badgeRendered)
+
+	if meta != nil {
+		if meta.ContentType != "" {
+			lines = append(lines, fmt.Sprintf("Format: %s", truncateString(meta.ContentType, maxWidth-8)))
+		}
+		if meta.ContentLength > 0 {
+			lines = append(lines, fmt.Sprintf("Size:   %s", formatBytes(meta.ContentLength)))
+		}
+	}
+
+	prompt := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#38BDF8")).
+		Bold(true).
+		Render("Press 'o' to open video in default player")
+	lines = append(lines, "", prompt)
+	return lines
+}
+
+func renderImagePreview(data []byte, name string, meta *objDomain.ObjectMetadata, maxWidth, maxHeight int) []string {
+	var lines []string
+	ext := strings.ToLower(filepath.Ext(name))
+
+	cfg, format, err := image.DecodeConfig(bytes.NewReader(data))
+	if err == nil && cfg.Width > 0 && cfg.Height > 0 {
+		dimStr := fmt.Sprintf("Dimensions: %d × %d px", cfg.Width, cfg.Height)
+		fmtStr := fmt.Sprintf("Format:     %s", strings.ToUpper(format))
+		lines = append(lines, dimStr, fmtStr)
+	} else if ext == ".svg" {
+		lines = append(lines, "Format:     SVG (Vector graphics)")
+	} else if meta != nil && meta.ContentType != "" {
+		lines = append(lines, fmt.Sprintf("Format:     %s", meta.ContentType))
+	}
+
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err == nil {
+		asciiArt := renderASCIIImage(img, maxWidth, maxHeight)
+		if len(asciiArt) > 0 {
+			lines = append(lines, "")
+			lines = append(lines, asciiArt...)
+		}
+	} else if ext == ".svg" {
+		lines = append(lines, "")
+		svgPreview := SanitizePreviewContent(data, maxWidth, maxHeight)
+		lines = append(lines, svgPreview...)
+	}
+
+	openPrompt := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#38BDF8")).
+		Render("Press 'o' to open image in system viewer")
+	lines = append(lines, "", openPrompt)
+	return lines
+}
+
+func renderASCIIImage(img image.Image, maxWidth, maxHeight int) []string {
+	bounds := img.Bounds()
+	origW := bounds.Dx()
+	origH := bounds.Dy()
+	if origW == 0 || origH == 0 {
+		return nil
+	}
+
+	targetW := maxWidth
+	if targetW > 36 {
+		targetW = 36
+	}
+	if targetW < 10 {
+		targetW = 10
+	}
+
+	// Terminal characters are roughly twice as tall as they are wide.
+	targetH := (origH * targetW) / (origW * 2)
+	if targetH > maxHeight {
+		targetH = maxHeight
+	}
+	if targetH < 3 {
+		targetH = 3
+	}
+
+	// Ramp from dark to bright:
+	asciiChars := []rune(" .:-=+*#%@")
+	numChars := len(asciiChars)
+
+	var lines []string
+	for y := range targetH {
+		var row strings.Builder
+		for x := range targetW {
+			srcX := bounds.Min.X + (x * origW / targetW)
+			srcY := bounds.Min.Y + (y * origH / targetH)
+			r, g, b, _ := img.At(srcX, srcY).RGBA()
+			// Luminance formula (ITU-R BT.601) scaled to 0..255
+			gray := (299*(r>>8) + 587*(g>>8) + 114*(b>>8)) / 1000
+			charIdx := int(gray) * (numChars - 1) / 255
+			if charIdx >= numChars {
+				charIdx = numChars - 1
+			}
+			row.WriteRune(asciiChars[charIdx])
+		}
+		lines = append(lines, row.String())
+	}
+	return lines
 }

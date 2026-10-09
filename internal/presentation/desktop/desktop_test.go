@@ -5,13 +5,16 @@ import (
 	"testing"
 	"time"
 
+	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/test"
+	"fyne.io/fyne/v2/widget"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	accountDomain "github.com/sekai-labs/kumokura/internal/accounts/domain"
 	accountPorts "github.com/sekai-labs/kumokura/internal/accounts/ports"
 	"github.com/sekai-labs/kumokura/internal/bootstrap"
+	bucketDomain "github.com/sekai-labs/kumokura/internal/buckets/domain"
 	objectDomain "github.com/sekai-labs/kumokura/internal/objects/domain"
 	"github.com/sekai-labs/kumokura/internal/platform/config"
 )
@@ -204,6 +207,34 @@ func TestDesktopAppSelectObjectAndPreview(t *testing.T) {
 	assert.Contains(t, app.metadataLabel.Text, "128 B")
 	assert.Contains(t, app.metadataLabel.Text, "abc123etag")
 	assert.Contains(t, app.previewStatusLabel.Text, "Ready to preview hello.txt")
+	assert.False(t, app.openExternalBtn.Disabled())
+
+	// Test Image detection and UI state
+	imgObj := &objectDomain.Object{
+		Key:          "photos/nature.png",
+		Size:         2048,
+		StorageClass: objectDomain.StorageClassStandard,
+		LastModified: time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC),
+	}
+	assert.True(t, isImageFile(imgObj.Key))
+	assert.False(t, isVideoFile(imgObj.Key))
+	app.selectObject(imgObj)
+	assert.Contains(t, app.previewStatusLabel.Text, "Image detected")
+	assert.False(t, app.openExternalBtn.Disabled())
+
+	// Test Video detection and UI state
+	vidObj := &objectDomain.Object{
+		Key:          "movies/trailer.mp4",
+		Size:         10485760,
+		StorageClass: objectDomain.StorageClassStandard,
+		LastModified: time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC),
+	}
+	assert.True(t, isVideoFile(vidObj.Key))
+	assert.False(t, isImageFile(vidObj.Key))
+	app.selectObject(vidObj)
+	assert.Contains(t, app.previewStatusLabel.Text, "Video detected")
+	assert.True(t, app.previewVideoBox.Visible())
+	assert.False(t, app.openExternalBtn.Disabled())
 }
 func TestDesktopAppTableSelectionAndNavigation(t *testing.T) {
 	tempDir := t.TempDir()
@@ -272,4 +303,116 @@ func TestDesktopAppTableSelectionAndNavigation(t *testing.T) {
 	assert.Equal(t, -1, app.lastSelectedCol)
 	assert.Nil(t, app.selectedObject)
 	app.mu.RUnlock()
+}
+
+func TestDesktopAppCellAndListItemRendering(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config.Config{
+		ConfigDir:  tempDir,
+		DataDir:    tempDir,
+		SecretsDir: tempDir,
+		DBPath:     ":memory:",
+		LogLevel:   "error",
+	}
+
+	appContainer, err := bootstrap.InitializeWithConfig(context.Background(), cfg)
+	require.NoError(t, err)
+	defer appContainer.Close()
+
+	// Seed an account
+	creds, err := accountDomain.NewCredentials("access-key", "secret-key", "")
+	require.NoError(t, err)
+	_, err = appContainer.AccountService.CreateAccount(context.Background(), accountPorts.CreateAccountParams{
+		Name:         "Production S3 Main Account",
+		Type:         accountDomain.TypeAWS,
+		Endpoint:     "",
+		Region:       "us-east-1",
+		UsePathStyle: false,
+		Credentials:  creds,
+	})
+	require.NoError(t, err)
+
+	fyneTestApp := test.NewApp()
+	app := NewDesktopAppWithFyneApp(appContainer, fyneTestApp)
+	require.NotNil(t, app)
+	app.loadAccounts()
+
+	// Verify Table cell template and sizing
+	cellObj := app.objectTable.CreateCell()
+	require.NotNil(t, cellObj)
+	cellBox, ok := cellObj.(*fyne.Container)
+	require.True(t, ok)
+	require.Len(t, cellBox.Objects, 2)
+
+	cellLbl, ok := cellBox.Objects[0].(*widget.Label)
+	require.True(t, ok)
+	cellIcon, ok := cellBox.Objects[1].(*widget.Icon)
+	require.True(t, ok)
+
+	// Setup an object in the table
+	app.mu.Lock()
+	app.filteredObjects = []objectDomain.Object{
+		{
+			Key:          "documents/report-final-presentation-2026.pdf",
+			Size:         1048576,
+			StorageClass: objectDomain.StorageClassStandard,
+			LastModified: time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC),
+		},
+	}
+	app.mu.Unlock()
+
+	// UpdateCell for header (Row 0, Col 0)
+	app.objectTable.UpdateCell(widget.TableCellID{Row: 0, Col: 0}, cellObj)
+	assert.False(t, cellIcon.Visible())
+	assert.Equal(t, "Name", cellLbl.Text)
+
+	// UpdateCell for object data (Row 1, Col 0 - Name)
+	app.objectTable.UpdateCell(widget.TableCellID{Row: 1, Col: 0}, cellObj)
+	assert.True(t, cellIcon.Visible())
+	assert.Equal(t, "documents/report-final-presentation-2026.pdf", cellLbl.Text)
+
+	// When allocated the column width (360px), cell label must expand to fill available width (> 300px), not collapse to ellipsis min size (~23px)
+	cellBox.Resize(fyne.NewSize(360, 36))
+	assert.Greater(t, cellLbl.Size().Width, float32(300))
+
+	// UpdateCell for object data (Row 1, Col 1 - Size)
+	app.objectTable.UpdateCell(widget.TableCellID{Row: 1, Col: 1}, cellObj)
+	assert.False(t, cellIcon.Visible())
+	assert.Equal(t, "1.0 MB", cellLbl.Text)
+	cellBox.Resize(fyne.NewSize(110, 36))
+	assert.Greater(t, cellLbl.Size().Width, float32(100))
+
+	// Verify Account list template and sizing
+	accObj := app.accountList.CreateItem()
+	require.NotNil(t, accObj)
+	accBox, ok := accObj.(*fyne.Container)
+	require.True(t, ok)
+	require.Len(t, accBox.Objects, 2)
+	accLbl, ok := accBox.Objects[0].(*widget.Label)
+	require.True(t, ok)
+
+	app.accountList.UpdateItem(0, accObj)
+	assert.Contains(t, accLbl.Text, "Production S3 Main Account")
+	accBox.Resize(fyne.NewSize(250, 40))
+	assert.Greater(t, accLbl.Size().Width, float32(200))
+
+	// Verify Bucket list template and sizing
+	app.mu.Lock()
+	app.buckets = []bucketDomain.Bucket{
+		{Name: "sekai-archive-backup-bucket", Region: "us-west-2"},
+	}
+	app.mu.Unlock()
+
+	bucketObj := app.bucketList.CreateItem()
+	require.NotNil(t, bucketObj)
+	bucketBox, ok := bucketObj.(*fyne.Container)
+	require.True(t, ok)
+	require.Len(t, bucketBox.Objects, 2)
+	bucketLbl, ok := bucketBox.Objects[0].(*widget.Label)
+	require.True(t, ok)
+
+	app.bucketList.UpdateItem(0, bucketObj)
+	assert.Contains(t, bucketLbl.Text, "sekai-archive-backup-bucket")
+	bucketBox.Resize(fyne.NewSize(250, 40))
+	assert.Greater(t, bucketLbl.Size().Width, float32(200))
 }

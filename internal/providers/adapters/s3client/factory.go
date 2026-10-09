@@ -9,6 +9,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go/logging"
 	accountdomain "github.com/sekai-labs/kumokura/internal/accounts/domain"
 	"github.com/sekai-labs/kumokura/internal/platform/transport"
 )
@@ -62,6 +63,8 @@ func (f *ClientFactory) Build(ctx context.Context, account *accountdomain.Accoun
 		awsconfig.WithRegion(region),
 		awsconfig.WithCredentialsProvider(credProvider),
 		awsconfig.WithHTTPClient(f.httpClient),
+		awsconfig.WithClientLogMode(0),
+		awsconfig.WithLogger(logging.Nop{}),
 	}
 
 	cfg, err := awsconfig.LoadDefaultConfig(ctx, loadOptions...)
@@ -72,6 +75,8 @@ func (f *ClientFactory) Build(ctx context.Context, account *accountdomain.Accoun
 	s3Options := []func(*s3.Options){
 		func(o *s3.Options) {
 			o.UsePathStyle = account.UsePathStyle
+			o.ClientLogMode = 0
+			o.Logger = logging.Nop{}
 		},
 	}
 

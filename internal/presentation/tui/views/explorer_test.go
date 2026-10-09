@@ -1,6 +1,7 @@
 package views
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -54,4 +55,51 @@ func TestExplorerView_PadVisual(t *testing.T) {
 
 	truncated := padVisual("this-is-a-very-long-string", 10, false)
 	assert.LessOrEqual(t, len(truncated), len("this-is-a-very-long-string"))
+}
+
+func TestExplorerView_MultiSelectRendering(t *testing.T) {
+	st := styles.NewStyles(styles.DarkTheme)
+	view := NewExplorerView(st)
+	view.Buckets = []bucketDomain.Bucket{{Name: "test-bucket"}}
+	view.ActiveBucket = "test-bucket"
+	view.ActivePaneIndex = 1
+	view.Prefixes = []objDomain.Prefix{{Prefix: "photos/"}}
+	view.Objects = []objDomain.Object{
+		{Key: "photo.jpg", Size: 1024},
+		{Key: "video.mp4", Size: 2048},
+	}
+
+	// In preview/inspect mode, [ ] markers appear
+	view.ShowPreview = true
+	rendered := view.Render(120, 30)
+	assert.Contains(t, rendered, "[ ]")
+	assert.Contains(t, rendered, "photos/")
+	assert.Contains(t, rendered, "photo.jpg")
+
+	// Select one item
+	view.SelectedKeys["photo.jpg"] = true
+	renderedSel := view.Render(120, 30)
+	assert.Contains(t, renderedSel, "[x]")
+	assert.Contains(t, renderedSel, "[ ]")
+}
+
+func TestExplorerView_MediaDetectionAndPreview(t *testing.T) {
+	assert.True(t, IsImageFile("photo.png"))
+	assert.True(t, IsImageFile("picture.jpeg"))
+	assert.True(t, IsImageFile("drawing.svg"))
+	assert.False(t, IsImageFile("archive.zip"))
+
+	assert.True(t, IsVideoFile("movie.mp4"))
+	assert.True(t, IsVideoFile("clip.webm"))
+	assert.False(t, IsVideoFile("track.mp3"))
+
+	// Video preview lines
+	meta := &objDomain.ObjectMetadata{
+		ContentType:   "video/mp4",
+		ContentLength: 1048576,
+	}
+	vLines := renderVideoPreview("movie.mp4", meta, 40)
+	vJoined := strings.Join(vLines, "\n")
+	assert.Contains(t, vJoined, "VIDEO [MP4]")
+	assert.Contains(t, vJoined, "Press 'o' to open video in default player")
 }

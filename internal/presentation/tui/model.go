@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
-
 	"github.com/aymanbagabas/go-osc52/v2"
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -65,16 +66,24 @@ type Model struct {
 	activeAccountID string
 	activeRegion    string
 	activeBucket    string
-	showHelpModal   bool
-	showDeleteModal bool
-	deleteTargetKey string
-	uploadModal     components.UploadModal
-	yaziPicker      filepicker.YaziPicker
-	downloadModal   components.DownloadModal
-	presignModal    components.PresignModal
-	activeUploads   int
+	showHelpModal    bool
+	showDeleteModal  bool
+	deleteTargetKey  string
+	deleteTargetKeys []string
+	presignTargetKeys []string
+	uploadModal      components.UploadModal
+	yaziPicker       filepicker.YaziPicker
+	downloadModal    components.DownloadModal
+	downloadTargets  []downloadTarget
+	presignModal     components.PresignModal
+	activeUploads    int
 	notification string
 	notifTimerID int
+}
+
+type downloadTarget struct {
+	Key      string
+	IsFolder bool
 }
 
 type clearNotificationMsg struct {
@@ -180,8 +189,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.explorerView.SelectedObject = 0
 			m.explorerView.ObjectOffset = 0
 			if len(msg.Result.Objects) > 0 {
+				m.explorerView.PreviewKey = msg.Result.Objects[0].Key
 				cmds = append(cmds, m.loadObjectMetadataCmd(m.activeBucket, msg.Result.Objects[0].Key))
+				cmds = append(cmds, m.loadObjectContentCmd(m.activeBucket, msg.Result.Objects[0].Key))
 			} else {
+				m.explorerView.PreviewKey = ""
 				m.explorerView.PreviewMetadata = nil
 				m.explorerView.PreviewContent = nil
 				m.explorerView.PreviewTags = nil
@@ -204,6 +216,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.Key == "" {
 				m.explorerView.PreviewContent = nil
 			} else {
+				m.explorerView.PreviewKey = msg.Key
 				m.explorerView.PreviewContent = []byte(msg.Content)
 			}
 		}
@@ -301,10 +314,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "y", "Y", "enter":
 				m.showDeleteModal = false
-				cmds = append(cmds, m.deleteObjectCmd(m.activeBucket, m.deleteTargetKey))
+				if len(m.deleteTargetKeys) > 0 {
+					cmds = append(cmds, m.deleteBatchObjectsCmd(m.activeBucket, m.deleteTargetKeys))
+				} else if m.deleteTargetKey != "" {
+					cmds = append(cmds, m.deleteObjectCmd(m.activeBucket, m.deleteTargetKey))
+				}
 				return m, tea.Batch(cmds...)
 			case "n", "N", "esc":
 				m.showDeleteModal = false
+				m.deleteTargetKeys = nil
+				m.deleteTargetKey = ""
 			}
 			return m, nil
 		}
@@ -395,6 +414,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case key.Matches(msg, m.keymap.Escape):
 				m.downloadModal.Active = false
 				m.downloadModal.Input.Blur()
+				m.downloadTargets = nil
 			case key.Matches(msg, m.keymap.Enter):
 				destDir := strings.TrimSpace(m.downloadModal.Input.Value())
 				if destDir == "" {
@@ -402,6 +422,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.downloadModal.Active = false
 				m.downloadModal.Input.Blur()
+
+				if len(m.downloadTargets) > 0 {
+					targets := m.downloadTargets
+					m.downloadTargets = nil
+					m.notification = fmt.Sprintf("Downloading %d selected item(s) to %s...", len(targets), destDir)
+					cmds = append(cmds, m.downloadBatchCmd(m.activeBucket, targets, destDir))
+					return m, tea.Batch(cmds...)
+				}
 
 				target := strings.TrimSpace(m.downloadModal.TargetName)
 				if target == "" {
@@ -429,6 +457,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case key.Matches(msg, m.keymap.Escape) || (m.presignModal.GeneratedURL != "" && key.Matches(msg, m.keymap.Enter)):
 				m.presignModal.Active = false
 				m.presignModal.Input.Blur()
+				m.presignTargetKeys = nil
 			case key.Matches(msg, m.keymap.Enter):
 				durStr := strings.TrimSpace(m.presignModal.Input.Value())
 				if durStr == "" {
@@ -438,7 +467,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if err != nil {
 					m.presignModal.ErrorText = "Invalid duration (e.g. 15m, 1h, 24h)"
 				} else {
-					cmds = append(cmds, m.generatePresignedURLCmd(m.activeBucket, m.presignModal.ObjectKey, dur))
+					if len(m.presignTargetKeys) > 1 {
+						cmds = append(cmds, m.generateBatchPresignedURLsCmd(m.activeBucket, m.presignTargetKeys, dur))
+					} else {
+						targetKey := m.presignModal.ObjectKey
+						if len(m.presignTargetKeys) == 1 {
+							targetKey = m.presignTargetKeys[0]
+						}
+						cmds = append(cmds, m.generatePresignedURLCmd(m.activeBucket, targetKey, dur))
+					}
 				}
 			default:
 				var tiCmd tea.Cmd
@@ -447,6 +484,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Batch(cmds...)
 		}
+
 
 		if m.searchBar.Active {
 			switch {
@@ -647,12 +685,97 @@ func (m Model) handleExplorerKeys(msg tea.KeyMsg, cmds []tea.Cmd) (Model, []tea.
 		} else if m.explorerView.ActivePaneIndex == 1 {
 			m.explorerView.ActivePaneIndex = 0
 		}
+	case key.Matches(msg, m.keymap.Select):
+		if m.explorerView.ActivePaneIndex == 1 {
+			prefixLen := len(m.explorerView.Prefixes)
+			total := prefixLen + len(m.explorerView.Objects)
+			if total > 0 && m.explorerView.SelectedObject < total {
+				if m.explorerView.SelectedKeys == nil {
+					m.explorerView.SelectedKeys = make(map[string]bool)
+				}
+				var itemKey string
+				if m.explorerView.SelectedObject < prefixLen {
+					itemKey = m.explorerView.Prefixes[m.explorerView.SelectedObject].Prefix
+				} else {
+					objIdx := m.explorerView.SelectedObject - prefixLen
+					itemKey = m.explorerView.Objects[objIdx].Key
+				}
+				if m.explorerView.SelectedKeys[itemKey] {
+					delete(m.explorerView.SelectedKeys, itemKey)
+				} else {
+					m.explorerView.SelectedKeys[itemKey] = true
+				}
+			}
+		}
+
+	case key.Matches(msg, m.keymap.SelectAll):
+		if m.explorerView.ActivePaneIndex == 1 {
+			if m.explorerView.SelectedKeys == nil {
+				m.explorerView.SelectedKeys = make(map[string]bool)
+			}
+			for _, p := range m.explorerView.Prefixes {
+				m.explorerView.SelectedKeys[p.Prefix] = true
+			}
+			for _, obj := range m.explorerView.Objects {
+				m.explorerView.SelectedKeys[obj.Key] = true
+			}
+		}
+
+	case key.Matches(msg, m.keymap.ClearSelect):
+		if m.explorerView.ActivePaneIndex == 1 {
+			m.explorerView.SelectedKeys = make(map[string]bool)
+		}
+
+	case key.Matches(msg, m.keymap.OpenMedia):
+		if m.activeBucket == "" {
+			m.notification = "Select a bucket before opening media"
+		} else {
+			var targetKey string
+			prefixLen := len(m.explorerView.Prefixes)
+			if len(m.explorerView.SelectedKeys) > 0 {
+				for k := range m.explorerView.SelectedKeys {
+					if !strings.HasSuffix(k, "/") {
+						targetKey = k
+						break
+					}
+				}
+			}
+			if targetKey == "" && m.explorerView.SelectedObject >= prefixLen {
+				objIdx := m.explorerView.SelectedObject - prefixLen
+				if objIdx < len(m.explorerView.Objects) {
+					targetKey = m.explorerView.Objects[objIdx].Key
+				}
+			}
+			if targetKey == "" || strings.HasSuffix(targetKey, "/") {
+				m.notification = "Select an object to open with system viewer"
+			} else {
+				m.notification = fmt.Sprintf("Opening %s with system player...", filepath.Base(targetKey))
+				cmds = append(cmds, m.openMediaExternalCmd(m.activeBucket, targetKey))
+			}
+		}
+
 	case key.Matches(msg, m.keymap.Delete):
-		prefixLen := len(m.explorerView.Prefixes)
-		if m.explorerView.SelectedObject >= prefixLen {
-			objIdx := m.explorerView.SelectedObject - prefixLen
-			if objIdx < len(m.explorerView.Objects) {
-				m.deleteTargetKey = m.explorerView.Objects[objIdx].Key
+		if len(m.explorerView.SelectedKeys) > 0 {
+			var selected []string
+			for k := range m.explorerView.SelectedKeys {
+				selected = append(selected, k)
+			}
+			m.deleteTargetKeys = selected
+			m.deleteTargetKey = ""
+			m.showDeleteModal = true
+		} else {
+			prefixLen := len(m.explorerView.Prefixes)
+			if m.explorerView.SelectedObject >= prefixLen {
+				objIdx := m.explorerView.SelectedObject - prefixLen
+				if objIdx < len(m.explorerView.Objects) {
+					m.deleteTargetKey = m.explorerView.Objects[objIdx].Key
+					m.deleteTargetKeys = nil
+					m.showDeleteModal = true
+				}
+			} else if m.explorerView.SelectedObject < prefixLen && prefixLen > 0 {
+				folderPrefix := m.explorerView.Prefixes[m.explorerView.SelectedObject].Prefix
+				m.deleteTargetKey = folderPrefix
+				m.deleteTargetKeys = nil
 				m.showDeleteModal = true
 			}
 		}
@@ -672,6 +795,19 @@ func (m Model) handleExplorerKeys(msg tea.KeyMsg, cmds []tea.Cmd) (Model, []tea.
 	case key.Matches(msg, m.keymap.Download):
 		if m.activeBucket == "" {
 			m.notification = "Select a bucket before downloading"
+		} else if len(m.explorerView.SelectedKeys) > 0 {
+			var targets []downloadTarget
+			for k := range m.explorerView.SelectedKeys {
+				isFolder := strings.HasSuffix(k, "/")
+				targets = append(targets, downloadTarget{Key: k, IsFolder: isFolder})
+			}
+			m.downloadTargets = targets
+			m.downloadModal.Active = true
+			m.downloadModal.TargetName = fmt.Sprintf("%d selected items", len(targets))
+			m.downloadModal.IsFolder = false
+			m.downloadModal.ErrorText = ""
+			m.downloadModal.Input.SetValue("./")
+			m.downloadModal.Input.Focus()
 		} else {
 			prefixLen := len(m.explorerView.Prefixes)
 			objLen := len(m.explorerView.Objects)
@@ -687,6 +823,7 @@ func (m Model) handleExplorerKeys(msg tea.KeyMsg, cmds []tea.Cmd) (Model, []tea.
 				}
 				if m.explorerView.SelectedObject < prefixLen {
 					targetFolder := m.explorerView.Prefixes[m.explorerView.SelectedObject].Prefix
+					m.downloadTargets = nil
 					m.downloadModal.Active = true
 					m.downloadModal.TargetName = targetFolder
 					m.downloadModal.IsFolder = true
@@ -697,6 +834,7 @@ func (m Model) handleExplorerKeys(msg tea.KeyMsg, cmds []tea.Cmd) (Model, []tea.
 					objIdx := m.explorerView.SelectedObject - prefixLen
 					if objIdx >= 0 && objIdx < objLen {
 						targetKey := m.explorerView.Objects[objIdx].Key
+						m.downloadTargets = nil
 						m.downloadModal.Active = true
 						m.downloadModal.TargetName = targetKey
 						m.downloadModal.IsFolder = false
@@ -712,12 +850,31 @@ func (m Model) handleExplorerKeys(msg tea.KeyMsg, cmds []tea.Cmd) (Model, []tea.
 	case key.Matches(msg, m.keymap.Presign):
 		if m.activeBucket == "" {
 			m.notification = "Select a bucket before generating presigned URL"
+		} else if len(m.explorerView.SelectedKeys) > 0 {
+			var selected []string
+			for k := range m.explorerView.SelectedKeys {
+				if !strings.HasSuffix(k, "/") {
+					selected = append(selected, k)
+				}
+			}
+			if len(selected) == 0 {
+				m.notification = "Presigned URL is only applicable to objects (not folders)"
+			} else {
+				m.presignTargetKeys = selected
+				m.presignModal.Active = true
+				m.presignModal.ObjectKey = fmt.Sprintf("%d selected objects", len(selected))
+				m.presignModal.GeneratedURL = ""
+				m.presignModal.ErrorText = ""
+				m.presignModal.Input.SetValue("60m")
+				m.presignModal.Input.Focus()
+			}
 		} else {
 			prefixLen := len(m.explorerView.Prefixes)
 			if m.explorerView.SelectedObject >= prefixLen {
 				objIdx := m.explorerView.SelectedObject - prefixLen
 				if objIdx < len(m.explorerView.Objects) {
 					targetKey := m.explorerView.Objects[objIdx].Key
+					m.presignTargetKeys = []string{targetKey}
 					m.presignModal.Active = true
 					m.presignModal.ObjectKey = targetKey
 					m.presignModal.GeneratedURL = ""
@@ -758,10 +915,20 @@ func (m Model) View() string {
 	}
 
 	var helpKeys []string
-	if m.width >= 120 {
-		helpKeys = []string{"[Tab] Switch Pane", "[j/k] Navigate", "[/] Filter", "[u] Upload", "[d] Download", "[p] Presigned", "[i] Inspect", "[?] Help"}
+	if m.explorerView.ShowPreview {
+		if m.width >= 160 {
+			helpKeys = []string{"[Tab] Switch Pane", "[j/k] Navigate", "[/] Filter", "[Space] Select", "[o] Open Media", "[u] Upload", "[d] Download", "[?] Help"}
+		} else if m.width >= 120 {
+			helpKeys = []string{"[Tab] Switch Pane", "[j/k] Navigate", "[/] Filter", "[u] Upload", "[d] Download", "[Space] Select", "[o] Open Media", "[?] Help"}
+		} else {
+			helpKeys = []string{"[Tab] Switch Pane", "[j/k] Navigate", "[/] Filter", "[u] Upload", "[d] Download", "[Space] Select", "[o] Open Media", "[?] Help"}
+		}
 	} else {
-		helpKeys = []string{"[Tab] Switch Pane", "[j/k] Navigate", "[/] Filter", "[u] Upload", "[d] Download", "[?] Help"}
+		if m.width >= 120 {
+			helpKeys = []string{"[Tab] Switch Pane", "[j/k] Navigate", "[/] Filter", "[u] Upload", "[d] Download", "[p] Presigned", "[i] Inspect", "[?] Help"}
+		} else {
+			helpKeys = []string{"[Tab] Switch Pane", "[j/k] Navigate", "[/] Filter", "[u] Upload", "[d] Download", "[?] Help"}
+		}
 	}
 	bottomBar := m.statusBar.Render(m.width, helpKeys, 0, 0, m.notification)
 
@@ -795,15 +962,20 @@ func (m Model) View() string {
 	}
 
 	if m.showDeleteModal {
+		var deleteMsg string
+		if len(m.deleteTargetKeys) > 0 {
+			deleteMsg = fmt.Sprintf("Permanently delete %d selected objects?", len(m.deleteTargetKeys))
+		} else {
+			deleteMsg = fmt.Sprintf("Are you sure you want to permanently delete object:\n%s", m.deleteTargetKey)
+		}
 		deleteModal := components.NewModalDialog(
 			"CONFIRM DELETION",
-			fmt.Sprintf("Are you sure you want to permanently delete object:\n%s", m.deleteTargetKey),
+			deleteMsg,
 			[]string{"Yes (Enter)", "Cancel (Esc)"},
 			m.styles,
 		)
 		return deleteModal.Render(m.width, m.height)
 	}
-
 	return mainView
 }
 
@@ -866,14 +1038,16 @@ func (m Model) loadObjectMetadataCmd(bucket, key string) tea.Cmd {
 }
 
 func (m *Model) clearPreview() {
+	m.explorerView.PreviewKey = ""
 	m.explorerView.PreviewMetadata = nil
 	m.explorerView.PreviewContent = nil
 	m.explorerView.PreviewTags = nil
 }
 
-func (m Model) inspectCurrentObjectCmd() tea.Cmd {
+func (m *Model) inspectCurrentObjectCmd() tea.Cmd {
 	prefixLen := len(m.explorerView.Prefixes)
 	if m.explorerView.SelectedObject < prefixLen {
+		m.explorerView.PreviewKey = ""
 		return func() tea.Msg {
 			return messages.ObjectMetadataLoadedMsg{}
 		}
@@ -881,6 +1055,7 @@ func (m Model) inspectCurrentObjectCmd() tea.Cmd {
 	objIdx := m.explorerView.SelectedObject - prefixLen
 	if objIdx < len(m.explorerView.Objects) {
 		key := m.explorerView.Objects[objIdx].Key
+		m.explorerView.PreviewKey = key
 		if strings.HasSuffix(key, "/") {
 			return func() tea.Msg {
 				return messages.ObjectMetadataLoadedMsg{}
@@ -891,6 +1066,7 @@ func (m Model) inspectCurrentObjectCmd() tea.Cmd {
 			m.loadObjectContentCmd(m.activeBucket, key),
 		)
 	}
+	m.explorerView.PreviewKey = ""
 	return nil
 }
 
@@ -1629,4 +1805,169 @@ func (m Model) resolveAccountID() string {
 		}
 	}
 	return m.activeAccount
+}
+
+func (m Model) deleteBatchObjectsCmd(bucket string, keys []string) tea.Cmd {
+	return func() tea.Msg {
+		if m.services.ObjectService == nil {
+			return messages.StatusNotificationMsg{Message: "Delete failed: object service unavailable"}
+		}
+		var objectKeys []string
+		var folderPrefixes []string
+		for _, k := range keys {
+			if strings.HasSuffix(k, "/") {
+				folderPrefixes = append(folderPrefixes, k)
+			} else {
+				objectKeys = append(objectKeys, k)
+			}
+		}
+
+		deletedCount := 0
+		if len(objectKeys) > 0 {
+			deleted, err := m.services.ObjectService.BatchDeleteObjects(context.Background(), bucket, objectKeys)
+			if err != nil {
+				return messages.StatusNotificationMsg{Message: fmt.Sprintf("Bulk delete error: %v", err)}
+			}
+			deletedCount += len(deleted)
+		}
+
+		for _, fp := range folderPrefixes {
+			res, err := m.services.ObjectService.ListObjects(context.Background(), bucket, objDomain.ObjectFilter{Prefix: fp, MaxKeys: 1000})
+			if err == nil {
+				var subKeys []string
+				for _, obj := range res.Objects {
+					subKeys = append(subKeys, obj.Key)
+				}
+				if len(subKeys) > 0 {
+					d, _ := m.services.ObjectService.BatchDeleteObjects(context.Background(), bucket, subKeys)
+					deletedCount += len(d)
+				}
+			}
+			_ = m.services.ObjectService.DeleteObject(context.Background(), bucket, fp, "")
+			deletedCount++
+		}
+
+		return messages.StatusNotificationMsg{Message: fmt.Sprintf("Deleted %d object(s)", deletedCount)}
+	}
+}
+
+func (m Model) downloadBatchCmd(bucket string, targets []downloadTarget, localDestDir string) tea.Cmd {
+	return func() tea.Msg {
+		totalCount := 0
+		var totalBytes int64
+		failedCount := 0
+
+		for _, t := range targets {
+			if t.IsFolder {
+				resMsg := m.downloadFolderCmd(bucket, t.Key, localDestDir)()
+				if fm, ok := resMsg.(messages.FolderDownloadFinishedMsg); ok {
+					if fm.Err != nil {
+						failedCount++
+					} else {
+						totalCount += fm.TotalCount
+						totalBytes += fm.TotalBytes
+					}
+				}
+			} else {
+				resMsg := m.downloadObjectCmd(bucket, t.Key, localDestDir)()
+				if dm, ok := resMsg.(messages.DownloadFinishedMsg); ok {
+					if dm.Err != nil {
+						failedCount++
+					} else {
+						totalCount++
+					}
+				}
+			}
+		}
+
+		if failedCount > 0 && totalCount == 0 {
+			return messages.StatusNotificationMsg{Message: fmt.Sprintf("Bulk download failed for %d item(s)", failedCount)}
+		}
+		return messages.StatusNotificationMsg{Message: fmt.Sprintf("Downloaded %d item(s) to %s", totalCount, localDestDir)}
+	}
+}
+
+func (m Model) generateBatchPresignedURLsCmd(bucket string, keys []string, expiry time.Duration) tea.Cmd {
+	return func() tea.Msg {
+		if m.services.ObjectService == nil {
+			return messages.PresignedURLGeneratedMsg{
+				Key: fmt.Sprintf("%d items", len(keys)),
+				Err: fmt.Errorf("object service unavailable"),
+			}
+		}
+
+		var urls []string
+		for _, k := range keys {
+			pURL, err := m.services.ObjectService.GeneratePresignedURL(context.Background(), bucket, k, "GET", expiry)
+			if err == nil {
+				urls = append(urls, fmt.Sprintf("# %s\n%s", k, pURL.URL))
+			}
+		}
+
+		if len(urls) == 0 {
+			return messages.PresignedURLGeneratedMsg{
+				Key: fmt.Sprintf("%d items", len(keys)),
+				Err: fmt.Errorf("failed to generate presigned URLs"),
+			}
+		}
+
+		allURLs := strings.Join(urls, "\n\n")
+		seq := osc52.New(allURLs)
+		fmt.Fprint(os.Stderr, seq)
+
+		return messages.PresignedURLGeneratedMsg{
+			URL:    allURLs,
+			Key:    fmt.Sprintf("%d items", len(keys)),
+			Copied: true,
+			Err:    nil,
+		}
+	}
+}
+
+func (m Model) openMediaExternalCmd(bucket, key string) tea.Cmd {
+	return func() tea.Msg {
+		if m.services.ObjectService == nil {
+			return messages.StatusNotificationMsg{Message: "Cannot open media: object service unavailable"}
+		}
+
+		obj, err := m.services.ObjectService.GetObject(context.Background(), bucket, key, "")
+		if err != nil {
+			return messages.StatusNotificationMsg{Message: fmt.Sprintf("Failed to fetch %s: %v", filepath.Base(key), err)}
+		}
+		defer obj.Body.Close()
+
+		tempDir := filepath.Join(os.TempDir(), "kumokura-media")
+		if err := os.MkdirAll(tempDir, 0755); err != nil {
+			tempDir = os.TempDir()
+		}
+
+		cleanFileName := filepath.Base(key)
+		tempFilePath := filepath.Join(tempDir, cleanFileName)
+
+		outFile, err := os.OpenFile(tempFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+		if err != nil {
+			return messages.StatusNotificationMsg{Message: fmt.Sprintf("Failed to create temp file: %v", err)}
+		}
+		if _, err := io.Copy(outFile, obj.Body); err != nil {
+			outFile.Close()
+			return messages.StatusNotificationMsg{Message: fmt.Sprintf("Failed to write media file: %v", err)}
+		}
+		outFile.Close()
+
+		var cmd *exec.Cmd
+		switch runtime.GOOS {
+		case "darwin":
+			cmd = exec.Command("open", tempFilePath)
+		case "windows":
+			cmd = exec.Command("cmd", "/c", "start", "", tempFilePath)
+		default:
+			cmd = exec.Command("xdg-open", tempFilePath)
+		}
+
+		if err := cmd.Start(); err != nil {
+			return messages.StatusNotificationMsg{Message: fmt.Sprintf("Failed to launch viewer: %v", err)}
+		}
+
+		return messages.StatusNotificationMsg{Message: fmt.Sprintf("Opened %s in system viewer", cleanFileName)}
+	}
 }

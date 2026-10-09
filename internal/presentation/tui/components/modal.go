@@ -269,7 +269,7 @@ func (p *PresignModal) Render(totalWidth, totalHeight int) string {
 		Width(dialogWidth - 4).
 		Render("🔗 GENERATE PRESIGNED URL")
 
-	targetLabel := lipgloss.NewStyle().Foreground(p.styles.Theme.TextSubtle).Render("Target Object:")
+	targetLabel := lipgloss.NewStyle().Foreground(p.styles.Theme.TextSubtle).Render("Target Object(s):")
 	targetVal := lipgloss.NewStyle().Foreground(p.styles.Theme.AccentSky).Bold(true).Render(p.ObjectKey)
 	targetBox := lipgloss.JoinVertical(lipgloss.Left, targetLabel, targetVal)
 

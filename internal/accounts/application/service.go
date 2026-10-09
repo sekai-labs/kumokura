@@ -13,6 +13,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go/logging"
 	"github.com/sekai-labs/kumokura/internal/accounts/domain"
 	"github.com/sekai-labs/kumokura/internal/accounts/ports"
 )
@@ -142,6 +143,8 @@ func (s *AccountApplicationService) TestConnection(ctx context.Context, id domai
 			creds.SessionToken,
 		)),
 		awsconfig.WithHTTPClient(&http.Client{Timeout: 10 * time.Second}),
+		awsconfig.WithClientLogMode(0),
+		awsconfig.WithLogger(logging.Nop{}),
 	}
 
 	cfg, err := awsconfig.LoadDefaultConfig(ctx, optFns...)
@@ -152,6 +155,8 @@ func (s *AccountApplicationService) TestConnection(ctx context.Context, id domai
 	s3OptFns := []func(*s3.Options){
 		func(o *s3.Options) {
 			o.UsePathStyle = acc.UsePathStyle
+			o.ClientLogMode = 0
+			o.Logger = logging.Nop{}
 		},
 	}
 	if acc.Endpoint != "" {
