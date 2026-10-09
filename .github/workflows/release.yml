@@ -95,6 +95,12 @@ jobs:
           cd dist
           7z a "../release-artifacts/${ARCHIVE_NAME}" kumokura.exe kumokura-tui.exe kumokura-desktop.exe
 
+      - name: Install WiX Toolset (Windows)
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix || true
+
       - name: Build Windows MSI installer
         if: matrix.goos == 'windows'
         shell: pwsh

@@ -17,6 +17,19 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Ensure dotnet tools are in PATH for current session
+$DotnetToolsDir = Join-Path $env:USERPROFILE ".dotnet\tools"
+if (Test-Path $DotnetToolsDir) {
+    if ($env:PATH -notlike "*$DotnetToolsDir*") {
+        $env:PATH = "$DotnetToolsDir;$env:PATH"
+    }
+} else {
+    # Even if folder doesn't exist yet, add it so dotnet tool install works seamlessly
+    if ($env:PATH -notlike "*$DotnetToolsDir*") {
+        $env:PATH = "$DotnetToolsDir;$env:PATH"
+    }
+}
+
 # Strip leading 'v' if present (e.g., "v0.1.0" -> "0.1.0")
 $CleanVersion = $Version.TrimStart('v')
 # WiX requires version format: major.minor.build (e.g. 1.2.3)
