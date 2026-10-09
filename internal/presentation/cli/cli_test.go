@@ -47,14 +47,14 @@ func TestVersionCommand(t *testing.T) {
 
 	out, _, err := executeCommand(app, "version")
 	require.NoError(t, err)
-	assert.Contains(t, out, "kumokura v0.1.0")
+	assert.Contains(t, out, "kumokura v0.1.1")
 
 	outJSON, _, err := executeCommand(app, "version", "--json")
 	require.NoError(t, err)
 	var v map[string]string
 	err = json.Unmarshal([]byte(outJSON), &v)
 	require.NoError(t, err)
-	assert.Equal(t, "0.1.0", v["version"])
+	assert.Equal(t, "0.1.1", v["version"])
 }
 
 func TestAccountCommands(t *testing.T) {

@@ -62,12 +62,12 @@ func newVersionCmd(opts *RootOptions, out, err io.Writer) *cobra.Command {
 			f := NewFormatter(out, err, opts.JSONOutput)
 			if opts.JSONOutput {
 				return f.PrintJSON(map[string]string{
-					"version": "0.1.0",
+					"version": "0.1.1",
 					"commit":  "clean",
 					"build":   "go1.24",
 				})
 			}
-			f.PrintMessage("kumokura v0.1.0")
+			f.PrintMessage("kumokura v0.1.1")
 			return nil
 		},
 	}
