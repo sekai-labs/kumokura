@@ -979,6 +979,10 @@ func newTUICmd(app *bootstrap.AppContainer, opts *RootOptions, out, err io.Write
 				if oErr == nil {
 					services.ObjectService = oSvc
 				}
+				tSvc, tErr := app.CreateTransferService(ctx, targetAccount)
+				if tErr == nil {
+					services.TransferService = tSvc
+				}
 			}
 
 			model := tui.NewModel(services)

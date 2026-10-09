@@ -1,6 +1,7 @@
 package desktop
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"fyne.io/fyne/v2"
@@ -9,14 +10,6 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
-	"io"
-	"os"
-	"path/filepath"
-	"strings"
-	"sync"
-	"sync/atomic"
-	"time"
-
 	accountDomain "github.com/sekai-labs/kumokura/internal/accounts/domain"
 	accountPorts "github.com/sekai-labs/kumokura/internal/accounts/ports"
 	"github.com/sekai-labs/kumokura/internal/bootstrap"
@@ -24,6 +17,13 @@ import (
 	objectDomain "github.com/sekai-labs/kumokura/internal/objects/domain"
 	"github.com/sekai-labs/kumokura/internal/platform/config"
 	transferDomain "github.com/sekai-labs/kumokura/internal/transfers/domain"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 )
 
 type DesktopApp struct {
@@ -47,6 +47,7 @@ type DesktopApp struct {
 	flatMode         bool
 	searchQuery      string
 	lastSelectedRow  int
+	lastSelectedCol  int
 	lastSelectedTime time.Time
 	jobs             []transferDomain.TransferJob
 
@@ -99,12 +100,13 @@ func NewDesktopAppWithFyneApp(appContainer *bootstrap.AppContainer, a fyne.App) 
 	w.Resize(fyne.NewSize(1280, 800))
 
 	da := &DesktopApp{
-		container:  appContainer,
-		fyneApp:    a,
-		window:     w,
-		stopTicker: make(chan struct{}),
+		container:       appContainer,
+		fyneApp:         a,
+		window:          w,
+		lastSelectedRow: -1,
+		lastSelectedCol: -1,
+		stopTicker:      make(chan struct{}),
 	}
-
 	da.buildUI()
 	return da
 }
@@ -382,9 +384,17 @@ func (d *DesktopApp) buildCenterPanel() fyne.CanvasObject {
 			switch id.Col {
 			case 0:
 				if obj.IsPrefix {
-					lbl.SetText("[DIR] " + obj.Key)
+					displayKey := obj.Key
+					if !d.flatMode && d.currentPrefix != "" {
+						displayKey = strings.TrimPrefix(displayKey, d.currentPrefix)
+					}
+					lbl.SetText("[DIR] " + displayKey)
 				} else {
-					lbl.SetText(obj.Key)
+					displayKey := obj.Key
+					if !d.flatMode && d.currentPrefix != "" {
+						displayKey = strings.TrimPrefix(displayKey, d.currentPrefix)
+					}
+					lbl.SetText(displayKey)
 				}
 			case 1:
 				if obj.IsPrefix {
@@ -417,7 +427,7 @@ func (d *DesktopApp) buildCenterPanel() fyne.CanvasObject {
 		if id.Row == 0 {
 			return
 		}
-		d.handleTableRowSelected(id.Row - 1)
+		d.handleTableRowSelected(id.Row-1, id.Col)
 	}
 
 	d.loadingBar = widget.NewProgressBarInfinite()
@@ -616,9 +626,13 @@ func (d *DesktopApp) selectAccount(acc *accountDomain.Account) {
 	d.filteredObjects = nil
 	d.selectedObject = nil
 	d.currentPrefix = ""
+	d.lastSelectedRow = -1
+	d.lastSelectedCol = -1
 	d.mu.Unlock()
 
-	d.updatePrefixNavUI()
+	if d.objectTable != nil {
+		d.objectTable.UnselectAll()
+	}
 	if d.accountSelect.Selected != acc.Name {
 		d.accountSelect.SetSelected(acc.Name)
 	}
@@ -671,7 +685,13 @@ func (d *DesktopApp) selectBucket(name string) {
 	d.filteredObjects = nil
 	d.selectedObject = nil
 	d.currentPrefix = ""
+	d.lastSelectedRow = -1
+	d.lastSelectedCol = -1
 	d.mu.Unlock()
+
+	if d.objectTable != nil {
+		d.objectTable.UnselectAll()
+	}
 
 	d.updatePrefixNavUI()
 	d.selectObject(nil)
@@ -925,7 +945,6 @@ func (d *DesktopApp) updatePrefixNavUI() {
 		}
 	}
 }
-
 func (d *DesktopApp) navigateToPrefix(prefix string) {
 	d.mu.Lock()
 	d.currentPrefix = prefix
@@ -933,7 +952,13 @@ func (d *DesktopApp) navigateToPrefix(prefix string) {
 	d.objects = nil
 	d.filteredObjects = nil
 	d.selectedObject = nil
+	d.lastSelectedRow = -1
+	d.lastSelectedCol = -1
 	d.mu.Unlock()
+
+	if d.objectTable != nil {
+		d.objectTable.UnselectAll()
+	}
 
 	d.updatePrefixNavUI()
 	d.selectObject(nil)
@@ -988,14 +1013,20 @@ func (d *DesktopApp) setViewMode(flat bool) {
 	d.objects = nil
 	d.filteredObjects = nil
 	d.selectedObject = nil
+	d.lastSelectedRow = -1
+	d.lastSelectedCol = -1
 	d.mu.Unlock()
+
+	if d.objectTable != nil {
+		d.objectTable.UnselectAll()
+	}
 
 	d.updatePrefixNavUI()
 	d.selectObject(nil)
 	d.loadObjects()
 }
 
-func (d *DesktopApp) handleTableRowSelected(idx int) {
+func (d *DesktopApp) handleTableRowSelected(idx int, col int) {
 	d.mu.Lock()
 	if idx < 0 || idx >= len(d.filteredObjects) {
 		d.mu.Unlock()
@@ -1004,8 +1035,9 @@ func (d *DesktopApp) handleTableRowSelected(idx int) {
 
 	obj := d.filteredObjects[idx]
 	now := time.Now()
-	isDoubleClick := (d.lastSelectedRow == idx) && (now.Sub(d.lastSelectedTime) < 500*time.Millisecond)
+	isDoubleClick := (d.lastSelectedRow == idx) && (d.lastSelectedCol == col) && (now.Sub(d.lastSelectedTime) < 500*time.Millisecond)
 	d.lastSelectedRow = idx
+	d.lastSelectedCol = col
 	d.lastSelectedTime = now
 	d.mu.Unlock()
 
@@ -1412,10 +1444,53 @@ func (d *DesktopApp) showUploadDialog() {
 				return
 			}
 
-			_, err = oService.PutObject(ctx, bucket, key, f, stat.Size(), objectDomain.ObjectMetadata{})
+			totalSize := stat.Size()
+			jobID := fmt.Sprintf("up-%d", time.Now().UnixNano())
+			accountID := string(acc.ID)
+			now := time.Now()
+			job := transferDomain.TransferJob{
+				ID:              jobID,
+				AccountID:       accountID,
+				Type:            transferDomain.TransferTypeUpload,
+				SourcePath:      filePath,
+				DestinationPath: fmt.Sprintf("s3://%s/%s", bucket, key),
+				Bucket:          bucket,
+				Key:             key,
+				Status:          transferDomain.JobStatusRunning,
+				TotalBytes:      totalSize,
+				CreatedAt:       now,
+				UpdatedAt:       now,
+			}
+			if d.container.TransferRepo != nil {
+				_ = d.container.TransferRepo.SaveJob(ctx, job)
+				d.loadTransfers()
+			}
+
+			pr := &progressReader{
+				reader: f,
+				total:  totalSize,
+				onProgress: func(transferred int64) {
+					if d.container.TransferRepo != nil {
+						_ = d.container.TransferRepo.UpdateJobProgress(ctx, jobID, transferred)
+						d.loadTransfers()
+					}
+				},
+			}
+
+			_, err = oService.PutObject(ctx, bucket, key, pr, totalSize, objectDomain.ObjectMetadata{})
 			if err != nil {
+				if d.container.TransferRepo != nil {
+					_ = d.container.TransferRepo.UpdateJobStatus(ctx, jobID, transferDomain.JobStatusFailed, err.Error())
+					d.loadTransfers()
+				}
 				dialog.ShowError(err, d.window)
 				return
+			}
+
+			if d.container.TransferRepo != nil {
+				_ = d.container.TransferRepo.UpdateJobProgress(ctx, jobID, totalSize)
+				_ = d.container.TransferRepo.UpdateJobStatus(ctx, jobID, transferDomain.JobStatusCompleted, "")
+				d.loadTransfers()
 			}
 
 			dialog.ShowInformation("Upload Success", fmt.Sprintf("Uploaded %s successfully.", key), d.window)
@@ -1460,32 +1535,99 @@ func (d *DesktopApp) showUploadFolderDialog() {
 				return
 			}
 
+			folderBase := filepath.Base(folderPath)
+			d.mu.RLock()
+			targetFolderPrefix := filepath.ToSlash(filepath.Clean(d.currentPrefix))
+			flat := d.flatMode
+			d.mu.RUnlock()
+
+			if targetFolderPrefix == "." {
+				targetFolderPrefix = ""
+			}
+			if targetFolderPrefix != "" && !strings.HasSuffix(targetFolderPrefix, "/") {
+				targetFolderPrefix += "/"
+			}
+			folderS3Prefix := targetFolderPrefix + folderBase + "/"
+			if flat {
+				folderS3Prefix = folderBase + "/"
+			}
+
+			_, _ = oService.PutObject(ctx, bucket, folderS3Prefix, bytes.NewReader([]byte{}), 0, objectDomain.ObjectMetadata{
+				ContentType: "application/x-directory",
+			})
+
 			var filesToUpload []string
+			var emptyDirsToUpload []string
+
 			_ = filepath.Walk(folderPath, func(p string, info os.FileInfo, walkErr error) error {
-				if walkErr == nil && !info.IsDir() {
-					filesToUpload = append(filesToUpload, p)
+				if walkErr != nil {
+					return nil
 				}
+				if info.IsDir() {
+					if p != folderPath {
+						entries, readErr := os.ReadDir(p)
+						if readErr == nil && len(entries) == 0 {
+							emptyDirsToUpload = append(emptyDirsToUpload, p)
+						}
+					}
+					return nil
+				}
+				filesToUpload = append(filesToUpload, p)
 				return nil
 			})
+
+			for _, dirPath := range emptyDirsToUpload {
+				rel, err := filepath.Rel(folderPath, dirPath)
+				if err != nil {
+					continue
+				}
+				dirKey := folderS3Prefix + filepath.ToSlash(rel) + "/"
+				_, _ = oService.PutObject(ctx, bucket, dirKey, bytes.NewReader([]byte{}), 0, objectDomain.ObjectMetadata{
+					ContentType: "application/x-directory",
+				})
+			}
 
 			sem := make(chan struct{}, concurrency)
 			var wg sync.WaitGroup
 			var uploadCount int64
+			accountID := string(acc.ID)
 
 			for _, filePath := range filesToUpload {
 				rel, err := filepath.Rel(folderPath, filePath)
 				if err != nil {
 					continue
 				}
-				key := filepath.ToSlash(rel)
-				d.mu.RLock()
-				if d.currentPrefix != "" && !d.flatMode {
-					key = d.currentPrefix + key
+				key := folderS3Prefix + filepath.ToSlash(rel)
+
+				st, sErr := os.Stat(filePath)
+				if sErr != nil {
+					continue
 				}
-				d.mu.RUnlock()
+				fileSize := st.Size()
+				jobID := fmt.Sprintf("up-%d", time.Now().UnixNano())
+				now := time.Now()
+
+				job := transferDomain.TransferJob{
+					ID:              jobID,
+					AccountID:       accountID,
+					Type:            transferDomain.TransferTypeUpload,
+					SourcePath:      filePath,
+					DestinationPath: fmt.Sprintf("s3://%s/%s", bucket, key),
+					Bucket:          bucket,
+					Key:             key,
+					Status:          transferDomain.JobStatusRunning,
+					TotalBytes:      fileSize,
+					CreatedAt:       now,
+					UpdatedAt:       now,
+				}
+				if d.container.TransferRepo != nil {
+					_ = d.container.TransferRepo.SaveJob(ctx, job)
+					d.loadTransfers()
+				}
+
 				sem <- struct{}{}
 				wg.Add(1)
-				go func(fPath, objKey string) {
+				go func(fPath, objKey, jID string, totalBytes int64) {
 					defer func() {
 						<-sem
 						wg.Done()
@@ -1493,20 +1635,41 @@ func (d *DesktopApp) showUploadFolderDialog() {
 
 					f, oErr := os.Open(fPath)
 					if oErr != nil {
+						if d.container.TransferRepo != nil {
+							_ = d.container.TransferRepo.UpdateJobStatus(ctx, jID, transferDomain.JobStatusFailed, oErr.Error())
+							d.loadTransfers()
+						}
 						return
 					}
 					defer f.Close()
 
-					st, sErr := f.Stat()
-					if sErr != nil {
+					pr := &progressReader{
+						reader: f,
+						total:  totalBytes,
+						onProgress: func(transferred int64) {
+							if d.container.TransferRepo != nil {
+								_ = d.container.TransferRepo.UpdateJobProgress(ctx, jID, transferred)
+								d.loadTransfers()
+							}
+						},
+					}
+
+					_, pErr := oService.PutObject(ctx, bucket, objKey, pr, totalBytes, objectDomain.ObjectMetadata{})
+					if pErr != nil {
+						if d.container.TransferRepo != nil {
+							_ = d.container.TransferRepo.UpdateJobStatus(ctx, jID, transferDomain.JobStatusFailed, pErr.Error())
+							d.loadTransfers()
+						}
 						return
 					}
 
-					_, pErr := oService.PutObject(ctx, bucket, objKey, f, st.Size(), objectDomain.ObjectMetadata{})
-					if pErr == nil {
-						atomic.AddInt64(&uploadCount, 1)
+					if d.container.TransferRepo != nil {
+						_ = d.container.TransferRepo.UpdateJobProgress(ctx, jID, totalBytes)
+						_ = d.container.TransferRepo.UpdateJobStatus(ctx, jID, transferDomain.JobStatusCompleted, "")
+						d.loadTransfers()
 					}
-				}(filePath, key)
+					atomic.AddInt64(&uploadCount, 1)
+				}(filePath, key, jobID, fileSize)
 			}
 			wg.Wait()
 
@@ -1581,12 +1744,55 @@ func (d *DesktopApp) downloadSelectedObject() {
 			}
 			defer content.Body.Close()
 
-			_, err = io.Copy(writer, content.Body)
+			jobID := fmt.Sprintf("dl-%d", time.Now().UnixNano())
+			accountID := string(acc.ID)
+			now := time.Now()
+			destPath := writer.URI().Path()
+
+			job := transferDomain.TransferJob{
+				ID:              jobID,
+				AccountID:       accountID,
+				Type:            transferDomain.TransferTypeDownload,
+				SourcePath:      fmt.Sprintf("s3://%s/%s", bucket, obj.Key),
+				DestinationPath: destPath,
+				Bucket:          bucket,
+				Key:             obj.Key,
+				Status:          transferDomain.JobStatusRunning,
+				TotalBytes:      obj.Size,
+				CreatedAt:       now,
+				UpdatedAt:       now,
+			}
+			if d.container.TransferRepo != nil {
+				_ = d.container.TransferRepo.SaveJob(ctx, job)
+				d.loadTransfers()
+			}
+
+			pr := &progressReader{
+				reader: content.Body,
+				total:  obj.Size,
+				onProgress: func(transferred int64) {
+					if d.container.TransferRepo != nil {
+						_ = d.container.TransferRepo.UpdateJobProgress(ctx, jobID, transferred)
+						d.loadTransfers()
+					}
+				},
+			}
+
+			_, err = io.Copy(writer, pr)
 			if err != nil {
+				if d.container.TransferRepo != nil {
+					_ = d.container.TransferRepo.UpdateJobStatus(ctx, jobID, transferDomain.JobStatusFailed, err.Error())
+					d.loadTransfers()
+				}
 				dialog.ShowError(err, d.window)
 				return
 			}
 
+			if d.container.TransferRepo != nil {
+				_ = d.container.TransferRepo.UpdateJobProgress(ctx, jobID, obj.Size)
+				_ = d.container.TransferRepo.UpdateJobStatus(ctx, jobID, transferDomain.JobStatusCompleted, "")
+				d.loadTransfers()
+			}
 			dialog.ShowInformation("Download Complete", fmt.Sprintf("Downloaded %s successfully.", obj.Key), d.window)
 		}()
 	}, d.window)
@@ -1844,4 +2050,22 @@ func formatBytes(bytes int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+type progressReader struct {
+	reader      io.Reader
+	total       int64
+	transferred int64
+	onProgress  func(int64)
+}
+
+func (pr *progressReader) Read(p []byte) (int, error) {
+	n, err := pr.reader.Read(p)
+	if n > 0 {
+		pr.transferred += int64(n)
+		if pr.onProgress != nil {
+			pr.onProgress(pr.transferred)
+		}
+	}
+	return n, err
 }

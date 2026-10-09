@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -54,15 +55,14 @@ type Model struct {
 
 	activeTab int
 
-	explorerView  views.ExplorerView
-	transfersView views.TransfersView
-	syncView      views.SyncView
-	helpView      views.HelpView
-
-	activeAccount string
-	activeRegion  string
-	activeBucket  string
-
+	explorerView    views.ExplorerView
+	transfersView   views.TransfersView
+	syncView        views.SyncView
+	helpView        views.HelpView
+	activeAccount   string
+	activeAccountID string
+	activeRegion    string
+	activeBucket    string
 	showHelpModal   bool
 	showDeleteModal bool
 	deleteTargetKey string
@@ -121,6 +121,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case messages.AccountsLoadedMsg:
 		if msg.Err == nil && len(msg.Accounts) > 0 {
 			m.activeAccount = msg.Accounts[0].Name
+			m.activeAccountID = string(msg.Accounts[0].ID)
 			m.activeRegion = msg.Accounts[0].Region
 		}
 
@@ -135,24 +136,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case messages.ObjectsLoadedMsg:
-		if msg.Err == nil {
+		if msg.Err != nil {
+			m.notification = fmt.Sprintf("Error loading objects: %v", msg.Err)
+		} else {
 			m.explorerView.Objects = msg.Result.Objects
 			m.explorerView.Prefixes = msg.Result.CommonPrefixes
 			m.explorerView.SelectedObject = 0
+			m.explorerView.ObjectOffset = 0
 			if len(msg.Result.Objects) > 0 {
 				cmds = append(cmds, m.loadObjectMetadataCmd(m.activeBucket, msg.Result.Objects[0].Key))
+			} else {
+				m.explorerView.PreviewMetadata = nil
+				m.explorerView.PreviewContent = nil
+				m.explorerView.PreviewTags = nil
 			}
 		}
-
 	case messages.ObjectMetadataLoadedMsg:
 		if msg.Err == nil {
-			m.explorerView.PreviewMetadata = &msg.Metadata
-			m.explorerView.PreviewTags = msg.Tags
+			if msg.Metadata.ContentType == "" && msg.Metadata.ContentLength == 0 {
+				m.explorerView.PreviewMetadata = nil
+				m.explorerView.PreviewTags = nil
+				m.explorerView.PreviewContent = nil
+			} else {
+				m.explorerView.PreviewMetadata = &msg.Metadata
+				m.explorerView.PreviewTags = msg.Tags
+			}
 		}
 
 	case messages.ContentPreviewLoadedMsg:
 		if msg.Err == nil {
-			m.explorerView.PreviewContent = []byte(msg.Content)
+			if msg.Key == "" {
+				m.explorerView.PreviewContent = nil
+			} else {
+				m.explorerView.PreviewContent = []byte(msg.Content)
+			}
 		}
 
 	case messages.UploadFinishedMsg:
@@ -234,7 +251,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.uploadModal.Active = false
 				m.uploadModal.Input.Blur()
 			case key.Matches(msg, m.keymap.Enter):
-				path := strings.TrimSpace(m.uploadModal.Input.Value())
+				rawPath := strings.TrimSpace(m.uploadModal.Input.Value())
+				path := cleanLocalInputPath(rawPath)
 				if path == "" {
 					m.uploadModal.ErrorText = "Please specify a valid file or folder path"
 				} else {
@@ -460,6 +478,11 @@ func (m Model) handleExplorerKeys(msg tea.KeyMsg, cmds []tea.Cmd) (Model, []tea.
 				m.activeBucket = m.explorerView.Buckets[m.explorerView.SelectedBucket].Name
 				m.explorerView.ActiveBucket = m.activeBucket
 				m.explorerView.CurrentPrefix = ""
+				m.explorerView.SelectedObject = 0
+				m.explorerView.ObjectOffset = 0
+				m.explorerView.PreviewMetadata = nil
+				m.explorerView.PreviewContent = nil
+				m.explorerView.PreviewTags = nil
 				m.explorerView.ActivePaneIndex = 1
 				cmds = append(cmds, m.loadObjectsCmd(m.activeBucket, ""))
 			}
@@ -467,7 +490,26 @@ func (m Model) handleExplorerKeys(msg tea.KeyMsg, cmds []tea.Cmd) (Model, []tea.
 			if m.explorerView.SelectedObject < len(m.explorerView.Prefixes) {
 				targetPrefix := m.explorerView.Prefixes[m.explorerView.SelectedObject].Prefix
 				m.explorerView.CurrentPrefix = targetPrefix
+				m.explorerView.SelectedObject = 0
+				m.explorerView.ObjectOffset = 0
+				m.explorerView.PreviewMetadata = nil
+				m.explorerView.PreviewContent = nil
+				m.explorerView.PreviewTags = nil
 				cmds = append(cmds, m.loadObjectsCmd(m.activeBucket, targetPrefix))
+			} else {
+				objIdx := m.explorerView.SelectedObject - len(m.explorerView.Prefixes)
+				if objIdx < len(m.explorerView.Objects) {
+					obj := m.explorerView.Objects[objIdx]
+					if strings.HasSuffix(obj.Key, "/") {
+						m.explorerView.CurrentPrefix = obj.Key
+						m.explorerView.SelectedObject = 0
+						m.explorerView.ObjectOffset = 0
+						m.explorerView.PreviewMetadata = nil
+						m.explorerView.PreviewContent = nil
+						m.explorerView.PreviewTags = nil
+						cmds = append(cmds, m.loadObjectsCmd(m.activeBucket, obj.Key))
+					}
+				}
 			}
 		}
 
@@ -480,9 +522,13 @@ func (m Model) handleExplorerKeys(msg tea.KeyMsg, cmds []tea.Cmd) (Model, []tea.
 			} else {
 				m.explorerView.CurrentPrefix = ""
 			}
+			m.explorerView.SelectedObject = 0
+			m.explorerView.ObjectOffset = 0
+			m.explorerView.PreviewMetadata = nil
+			m.explorerView.PreviewContent = nil
+			m.explorerView.PreviewTags = nil
 			cmds = append(cmds, m.loadObjectsCmd(m.activeBucket, m.explorerView.CurrentPrefix))
 		}
-
 	case key.Matches(msg, m.keymap.Delete):
 		prefixLen := len(m.explorerView.Prefixes)
 		if m.explorerView.SelectedObject >= prefixLen {
@@ -678,17 +724,31 @@ func (m Model) loadObjectMetadataCmd(bucket, key string) tea.Cmd {
 	}
 }
 
+func (m *Model) clearPreview() {
+	m.explorerView.PreviewMetadata = nil
+	m.explorerView.PreviewContent = nil
+	m.explorerView.PreviewTags = nil
+}
+
 func (m Model) inspectCurrentObjectCmd() tea.Cmd {
 	prefixLen := len(m.explorerView.Prefixes)
-	if m.explorerView.SelectedObject >= prefixLen {
-		objIdx := m.explorerView.SelectedObject - prefixLen
-		if objIdx < len(m.explorerView.Objects) {
-			key := m.explorerView.Objects[objIdx].Key
-			return tea.Batch(
-				m.loadObjectMetadataCmd(m.activeBucket, key),
-				m.loadObjectContentCmd(m.activeBucket, key),
-			)
+	if m.explorerView.SelectedObject < prefixLen {
+		return func() tea.Msg {
+			return messages.ObjectMetadataLoadedMsg{}
 		}
+	}
+	objIdx := m.explorerView.SelectedObject - prefixLen
+	if objIdx < len(m.explorerView.Objects) {
+		key := m.explorerView.Objects[objIdx].Key
+		if strings.HasSuffix(key, "/") {
+			return func() tea.Msg {
+				return messages.ObjectMetadataLoadedMsg{}
+			}
+		}
+		return tea.Batch(
+			m.loadObjectMetadataCmd(m.activeBucket, key),
+			m.loadObjectContentCmd(m.activeBucket, key),
+		)
 	}
 	return nil
 }
@@ -750,12 +810,39 @@ func (m Model) uploadObjectCmd(bucket, key, localPath string) tea.Cmd {
 			fullKey = filepath.ToSlash(filepath.Join(m.explorerView.CurrentPrefix, key))
 		}
 
+		accountID := m.resolveAccountID()
+		jobID := fmt.Sprintf("up-%d", time.Now().UnixNano())
+		if m.services.TransferService != nil {
+			job := transferDomain.TransferJob{
+				ID:               jobID,
+				AccountID:        accountID,
+				Type:             transferDomain.TransferTypeUpload,
+				SourcePath:       localPath,
+				DestinationPath:  fmt.Sprintf("s3://%s/%s", bucket, fullKey),
+				Bucket:           bucket,
+				Key:              fullKey,
+				TotalBytes:       stat.Size(),
+				BytesTransferred: 0,
+				Status:           transferDomain.JobStatusRunning,
+			}
+			_, _ = m.services.TransferService.SubmitJob(context.Background(), job)
+		}
+
 		meta := objDomain.ObjectMetadata{
 			ContentType:   "application/octet-stream",
 			ContentLength: stat.Size(),
 		}
 
 		_, err = m.services.ObjectService.PutObject(context.Background(), bucket, fullKey, f, stat.Size(), meta)
+		if m.services.TransferService != nil {
+			if err != nil {
+				_ = m.services.TransferService.UpdateJobStatus(context.Background(), jobID, transferDomain.JobStatusFailed, err.Error())
+			} else {
+				_ = m.services.TransferService.UpdateJobProgress(context.Background(), jobID, stat.Size())
+				_ = m.services.TransferService.UpdateJobStatus(context.Background(), jobID, transferDomain.JobStatusCompleted, "")
+			}
+		}
+
 		return messages.UploadFinishedMsg{
 			Bucket: bucket,
 			Key:    fullKey,
@@ -771,7 +858,14 @@ func (m Model) loadTransfersCmd() tea.Cmd {
 				Jobs: []transferDomain.TransferJob{},
 			}
 		}
-		jobs, err := m.services.TransferService.ListJobs(context.Background(), m.activeAccount, "")
+		accountID := m.resolveAccountID()
+		jobs, err := m.services.TransferService.ListJobs(context.Background(), accountID, "")
+		if (err != nil || len(jobs) == 0) && accountID != m.activeAccount {
+			jobs, err = m.services.TransferService.ListJobs(context.Background(), m.activeAccount, "")
+		}
+		if (err != nil || len(jobs) == 0) && accountID != "" {
+			jobs, err = m.services.TransferService.ListJobs(context.Background(), "", "")
+		}
 		if err != nil || len(jobs) == 0 {
 			return messages.TransfersLoadedMsg{
 				Jobs: []transferDomain.TransferJob{},
@@ -818,71 +912,157 @@ func (m Model) uploadFolderCmd(bucket, prefix, localDirPath string) tea.Cmd {
 		}
 
 		cleanDir := filepath.Clean(localDirPath)
+		folderBase := filepath.Base(cleanDir)
+		targetFolderPrefix := filepath.ToSlash(filepath.Clean(prefix))
+		if targetFolderPrefix == "." || targetFolderPrefix == "/" {
+			targetFolderPrefix = ""
+		}
+		if targetFolderPrefix != "" && !strings.HasSuffix(targetFolderPrefix, "/") {
+			targetFolderPrefix += "/"
+		}
+		folderS3Prefix := targetFolderPrefix + folderBase + "/"
+
+		accountID := m.resolveAccountID()
+
+		rootMarkerMeta := objDomain.ObjectMetadata{
+			ContentType:   "application/x-directory",
+			ContentLength: 0,
+		}
+		jobIDRoot := fmt.Sprintf("up-%d", time.Now().UnixNano())
+		if m.services.TransferService != nil {
+			job := transferDomain.TransferJob{
+				ID:               jobIDRoot,
+				AccountID:        accountID,
+				Type:             transferDomain.TransferTypeUpload,
+				SourcePath:       cleanDir,
+				DestinationPath:  fmt.Sprintf("s3://%s/%s", bucket, folderS3Prefix),
+				Bucket:           bucket,
+				Key:              folderS3Prefix,
+				TotalBytes:       0,
+				BytesTransferred: 0,
+				Status:           transferDomain.JobStatusRunning,
+			}
+			_, _ = m.services.TransferService.SubmitJob(context.Background(), job)
+		}
+		_, rootMarkerErr := m.services.ObjectService.PutObject(context.Background(), bucket, folderS3Prefix, bytes.NewReader([]byte{}), 0, rootMarkerMeta)
+		if m.services.TransferService != nil {
+			if rootMarkerErr != nil {
+				_ = m.services.TransferService.UpdateJobStatus(context.Background(), jobIDRoot, transferDomain.JobStatusFailed, rootMarkerErr.Error())
+			} else {
+				_ = m.services.TransferService.UpdateJobProgress(context.Background(), jobIDRoot, 0)
+				_ = m.services.TransferService.UpdateJobStatus(context.Background(), jobIDRoot, transferDomain.JobStatusCompleted, "")
+			}
+		}
+
 		var totalCount int
 		var totalBytes int64
 		var failedCount int
 
-		err := filepath.Walk(cleanDir, func(path string, info os.FileInfo, err error) error {
-			if err != nil {
+		err := filepath.Walk(cleanDir, func(path string, info os.FileInfo, walkErr error) error {
+			if walkErr != nil {
 				failedCount++
 				return nil
 			}
+
+			relPath, relErr := filepath.Rel(cleanDir, path)
+			if relErr != nil {
+				failedCount++
+				return nil
+			}
+			if relPath == "." {
+				return nil
+			}
+
 			if info.IsDir() {
+
+				dirMarkerKey := folderS3Prefix + filepath.ToSlash(relPath) + "/"
+				dirMarkerMeta := objDomain.ObjectMetadata{
+					ContentType:   "application/x-directory",
+					ContentLength: 0,
+				}
+				jobIDDir := fmt.Sprintf("up-%d", time.Now().UnixNano())
+				if m.services.TransferService != nil {
+					job := transferDomain.TransferJob{
+						ID:               jobIDDir,
+						AccountID:        accountID,
+						Type:             transferDomain.TransferTypeUpload,
+						SourcePath:       path,
+						DestinationPath:  fmt.Sprintf("s3://%s/%s", bucket, dirMarkerKey),
+						Bucket:           bucket,
+						Key:              dirMarkerKey,
+						TotalBytes:       0,
+						BytesTransferred: 0,
+						Status:           transferDomain.JobStatusRunning,
+					}
+					_, _ = m.services.TransferService.SubmitJob(context.Background(), job)
+				}
+				_, pErr := m.services.ObjectService.PutObject(context.Background(), bucket, dirMarkerKey, bytes.NewReader([]byte{}), 0, dirMarkerMeta)
+				if m.services.TransferService != nil {
+					if pErr != nil {
+						_ = m.services.TransferService.UpdateJobStatus(context.Background(), jobIDDir, transferDomain.JobStatusFailed, pErr.Error())
+					} else {
+						_ = m.services.TransferService.UpdateJobProgress(context.Background(), jobIDDir, 0)
+						_ = m.services.TransferService.UpdateJobStatus(context.Background(), jobIDDir, transferDomain.JobStatusCompleted, "")
+					}
+				}
 				return nil
 			}
 
-			relPath, err := filepath.Rel(cleanDir, path)
-			if err != nil {
-				failedCount++
-				return nil
-			}
+			targetKey := folderS3Prefix + filepath.ToSlash(relPath)
 
-			targetKey := filepath.ToSlash(relPath)
-			if prefix != "" {
-				targetKey = filepath.ToSlash(filepath.Join(prefix, targetKey))
-			}
-
-			f, err := os.Open(path)
-			if err != nil {
+			f, openErr := os.Open(path)
+			if openErr != nil {
 				failedCount++
 				return nil
 			}
 			defer f.Close()
 
+			fileSize := info.Size()
 			meta := objDomain.ObjectMetadata{
 				ContentType:   "application/octet-stream",
-				ContentLength: info.Size(),
+				ContentLength: fileSize,
 			}
 
+			jobIDFile := fmt.Sprintf("up-%d", time.Now().UnixNano())
 			if m.services.TransferService != nil {
 				job := transferDomain.TransferJob{
-					ID:              fmt.Sprintf("up-%d", time.Now().UnixNano()),
-					AccountID:       m.activeAccount,
-					Type:            transferDomain.TransferTypeUpload,
-					SourcePath:      path,
-					DestinationPath: fmt.Sprintf("s3://%s/%s", bucket, targetKey),
-					Bucket:          bucket,
-					Key:             targetKey,
-					TotalBytes:      info.Size(),
-					Status:          transferDomain.JobStatusPending,
+					ID:               jobIDFile,
+					AccountID:        accountID,
+					Type:             transferDomain.TransferTypeUpload,
+					SourcePath:       path,
+					DestinationPath:  fmt.Sprintf("s3://%s/%s", bucket, targetKey),
+					Bucket:           bucket,
+					Key:              targetKey,
+					TotalBytes:       fileSize,
+					BytesTransferred: 0,
+					Status:           transferDomain.JobStatusRunning,
 				}
 				_, _ = m.services.TransferService.SubmitJob(context.Background(), job)
 			}
 
-			_, putErr := m.services.ObjectService.PutObject(context.Background(), bucket, targetKey, f, info.Size(), meta)
+			_, putErr := m.services.ObjectService.PutObject(context.Background(), bucket, targetKey, f, fileSize, meta)
+			if m.services.TransferService != nil {
+				if putErr != nil {
+					_ = m.services.TransferService.UpdateJobStatus(context.Background(), jobIDFile, transferDomain.JobStatusFailed, putErr.Error())
+				} else {
+					_ = m.services.TransferService.UpdateJobProgress(context.Background(), jobIDFile, fileSize)
+					_ = m.services.TransferService.UpdateJobStatus(context.Background(), jobIDFile, transferDomain.JobStatusCompleted, "")
+				}
+			}
+
 			if putErr != nil {
 				failedCount++
 				return nil
 			}
 
 			totalCount++
-			totalBytes += info.Size()
+			totalBytes += fileSize
 			return nil
 		})
 
 		return messages.FolderUploadFinishedMsg{
 			Bucket:      bucket,
-			Prefix:      prefix,
+			Prefix:      folderS3Prefix,
 			TotalCount:  totalCount,
 			TotalBytes:  totalBytes,
 			FailedCount: failedCount,
@@ -942,9 +1122,10 @@ func (m Model) downloadObjectCmd(bucket, key, localDestDir string) tea.Cmd {
 		}
 
 		if m.services.TransferService != nil {
+			accountID := m.resolveAccountID()
 			job := transferDomain.TransferJob{
 				ID:               fmt.Sprintf("dl-%d", time.Now().UnixNano()),
-				AccountID:        m.activeAccount,
+				AccountID:        accountID,
 				Type:             transferDomain.TransferTypeDownload,
 				SourcePath:       fmt.Sprintf("s3://%s/%s", bucket, key),
 				DestinationPath:  destPath,
@@ -1044,9 +1225,10 @@ func (m Model) downloadFolderCmd(bucket, prefix, localDestDir string) tea.Cmd {
 				totalBytes += written
 
 				if m.services.TransferService != nil {
+					accountID := m.resolveAccountID()
 					job := transferDomain.TransferJob{
 						ID:               fmt.Sprintf("dl-%d", time.Now().UnixNano()),
-						AccountID:        m.activeAccount,
+						AccountID:        accountID,
 						Type:             transferDomain.TransferTypeDownload,
 						SourcePath:       fmt.Sprintf("s3://%s/%s", bucket, obj.Key),
 						DestinationPath:  targetFilePath,
@@ -1114,7 +1296,11 @@ func (m Model) loadSyncJobsCmd() tea.Cmd {
 				Jobs: []*syncPorts.SyncJobRecord{},
 			}
 		}
-		jobs, err := m.services.SyncRepo.ListJobs(context.Background(), m.activeAccount)
+		accountID := m.resolveAccountID()
+		jobs, err := m.services.SyncRepo.ListJobs(context.Background(), accountID)
+		if (err != nil || len(jobs) == 0) && accountID != m.activeAccount {
+			jobs, err = m.services.SyncRepo.ListJobs(context.Background(), m.activeAccount)
+		}
 		return messages.SyncJobsLoadedMsg{
 			Jobs: jobs,
 			Err:  err,
@@ -1133,4 +1319,39 @@ func formatBytes(bytes int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+func cleanLocalInputPath(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if strings.HasPrefix(raw, "\"") && strings.HasSuffix(raw, "\"") && len(raw) >= 2 {
+		raw = strings.Trim(raw, "\"")
+	} else if strings.HasPrefix(raw, "'") && strings.HasSuffix(raw, "'") && len(raw) >= 2 {
+		raw = strings.Trim(raw, "'")
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "~" || strings.HasPrefix(raw, "~/") || strings.HasPrefix(raw, "~\\") {
+		if home, err := os.UserHomeDir(); err == nil {
+			if raw == "~" {
+				raw = home
+			} else {
+				raw = filepath.Join(home, raw[2:])
+			}
+		}
+	}
+	return filepath.Clean(raw)
+}
+
+func (m Model) resolveAccountID() string {
+	if m.activeAccountID != "" {
+		return m.activeAccountID
+	}
+	if m.services.AccountService != nil {
+		if accs, err := m.services.AccountService.ListAccounts(context.Background()); err == nil {
+			for _, a := range accs {
+				if a != nil && (a.Name == m.activeAccount || string(a.ID) == m.activeAccount) {
+					return string(a.ID)
+				}
+			}
+		}
+	}
+	return m.activeAccount
 }

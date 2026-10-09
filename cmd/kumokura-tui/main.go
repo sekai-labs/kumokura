@@ -49,8 +49,11 @@ func main() {
 		if oErr == nil {
 			services.ObjectService = oSvc
 		}
+		tSvc, tErr := app.CreateTransferService(ctx, activeAccountName)
+		if tErr == nil {
+			services.TransferService = tSvc
+		}
 	}
-
 	model := tui.NewModel(services)
 
 	p := tea.NewProgram(

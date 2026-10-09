@@ -1,14 +1,14 @@
 package tui
 
 import (
-	"testing"
-
 	tea "github.com/charmbracelet/bubbletea"
 	bucketDomain "github.com/sekai-labs/kumokura/internal/buckets/domain"
 	objDomain "github.com/sekai-labs/kumokura/internal/objects/domain"
 	objPorts "github.com/sekai-labs/kumokura/internal/objects/ports"
 	"github.com/sekai-labs/kumokura/internal/presentation/tui/messages"
 	"github.com/stretchr/testify/assert"
+	"strings"
+	"testing"
 )
 
 func TestTUI_ModelInitAndRender(t *testing.T) {
@@ -216,4 +216,37 @@ func TestTUI_PresignModalAndInspectorToggle(t *testing.T) {
 	mI, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'i'}})
 	uI := mI.(Model)
 	assert.Equal(t, !initialPreview, uI.explorerView.ShowPreview)
+}
+func TestTUI_CleanLocalInputPath(t *testing.T) {
+	assert.Equal(t, "/tmp/folder", cleanLocalInputPath("\"/tmp/folder\""))
+	assert.Equal(t, "/tmp/folder", cleanLocalInputPath("'/tmp/folder'"))
+	assert.Equal(t, "/tmp/folder", cleanLocalInputPath("  \"/tmp/folder\"  "))
+
+	cleanTilde := cleanLocalInputPath("~/test")
+	assert.NotContains(t, cleanTilde, "~")
+	assert.True(t, strings.HasSuffix(cleanTilde, "test"))
+}
+
+func TestTUI_FolderMarkerNavigationAndPreviewClear(t *testing.T) {
+	model := NewModel(Services{})
+	model.activeBucket = "test-bucket"
+	model.explorerView.ActivePaneIndex = 1
+	model.explorerView.Prefixes = []objDomain.Prefix{}
+	model.explorerView.Objects = []objDomain.Object{
+		{Key: "photos/", Size: 0},
+		{Key: "notes.txt", Size: 120},
+	}
+	model.explorerView.PreviewContent = []byte("stale note content")
+
+	model.explorerView.SelectedObject = 0
+	mEnter, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	uEnter := mEnter.(Model)
+	assert.Equal(t, "photos/", uEnter.explorerView.CurrentPrefix)
+	assert.Equal(t, 0, uEnter.explorerView.SelectedObject)
+	assert.Nil(t, uEnter.explorerView.PreviewContent)
+
+	mBack, _ := uEnter.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	uBack := mBack.(Model)
+	assert.Equal(t, "", uBack.explorerView.CurrentPrefix)
+	assert.Nil(t, uBack.explorerView.PreviewContent)
 }

@@ -205,3 +205,71 @@ func TestDesktopAppSelectObjectAndPreview(t *testing.T) {
 	assert.Contains(t, app.metadataLabel.Text, "abc123etag")
 	assert.Contains(t, app.previewStatusLabel.Text, "Ready to preview hello.txt")
 }
+func TestDesktopAppTableSelectionAndNavigation(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &config.Config{
+		ConfigDir:  tempDir,
+		DataDir:    tempDir,
+		SecretsDir: tempDir,
+		DBPath:     ":memory:",
+		LogLevel:   "error",
+	}
+	appContainer, err := bootstrap.InitializeWithConfig(context.Background(), cfg)
+	require.NoError(t, err)
+	defer appContainer.Close()
+
+	fyneTestApp := test.NewApp()
+	app := NewDesktopAppWithFyneApp(appContainer, fyneTestApp)
+	require.NotNil(t, app)
+
+	assert.Equal(t, -1, app.lastSelectedRow)
+	assert.Equal(t, -1, app.lastSelectedCol)
+
+	app.mu.Lock()
+	app.currentPrefix = "photos/"
+	app.prefixes = []objectDomain.Prefix{
+		{Bucket: "my-bucket", Prefix: "photos/vacation/"},
+		{Bucket: "my-bucket", Prefix: "photos/work/"},
+	}
+	app.objects = []objectDomain.Object{
+		{Bucket: "my-bucket", Key: "photos/family.jpg", Size: 1024, StorageClass: objectDomain.StorageClassStandard, LastModified: time.Now()},
+	}
+	app.applyFilterLocked()
+	app.mu.Unlock()
+
+	app.mu.RLock()
+	assert.Len(t, app.filteredObjects, 3)
+	assert.True(t, app.filteredObjects[0].IsPrefix)
+	assert.Equal(t, "photos/vacation/", app.filteredObjects[0].Key)
+	app.mu.RUnlock()
+
+	app.handleTableRowSelected(0, 0)
+	app.mu.RLock()
+	assert.Equal(t, 0, app.lastSelectedRow)
+	assert.Equal(t, 0, app.lastSelectedCol)
+	assert.NotNil(t, app.selectedObject)
+	assert.Equal(t, "photos/vacation/", app.selectedObject.Key)
+	app.mu.RUnlock()
+
+	app.handleTableRowSelected(0, 1)
+	app.mu.RLock()
+	assert.Equal(t, 0, app.lastSelectedRow)
+	assert.Equal(t, 1, app.lastSelectedCol)
+	app.mu.RUnlock()
+
+	app.navigateToPrefix("photos/vacation/")
+	app.mu.RLock()
+	assert.Equal(t, "photos/vacation/", app.currentPrefix)
+	assert.Equal(t, -1, app.lastSelectedRow)
+	assert.Equal(t, -1, app.lastSelectedCol)
+	assert.Nil(t, app.selectedObject)
+	app.mu.RUnlock()
+
+	app.navigateUp()
+	app.mu.RLock()
+	assert.Equal(t, "photos/", app.currentPrefix)
+	assert.Equal(t, -1, app.lastSelectedRow)
+	assert.Equal(t, -1, app.lastSelectedCol)
+	assert.Nil(t, app.selectedObject)
+	app.mu.RUnlock()
+}

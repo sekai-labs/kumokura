@@ -166,8 +166,16 @@ func (v ExplorerView) renderCenterPanel(width, height int) string {
 	}
 	titleText := fmt.Sprintf("OBJECT EXPLORER: %s", s3Uri)
 	title := v.styles.PanelTitle.Render(titleText)
-	totalItems := len(v.Prefixes) + len(v.Objects)
-	maxItems := height - 2
+	var visibleObjects []objDomain.Object
+	for _, obj := range v.Objects {
+		if v.CurrentPrefix != "" && (obj.Key == v.CurrentPrefix || obj.Key == strings.TrimSuffix(v.CurrentPrefix, "/")) {
+			continue
+		}
+		visibleObjects = append(visibleObjects, obj)
+	}
+
+	totalItems := len(v.Prefixes) + len(visibleObjects)
+	maxItems := height - 3
 	if maxItems < 1 {
 		maxItems = 1
 	}
@@ -194,7 +202,6 @@ func (v ExplorerView) renderCenterPanel(width, height int) string {
 	}
 	tblHeader := fmt.Sprintf("   %-*s %9s %12s", keyColW, "Key", "Size", "Last Modified")
 	rows = append(rows, v.styles.StatusKey.Render(tblHeader))
-	maxItems = max(1, maxItems-1)
 
 	if totalItems == 0 {
 		emptyMsg := v.styles.StatusDesc.Render("   Prefix is empty (or no objects match filter)")
@@ -202,7 +209,6 @@ func (v ExplorerView) renderCenterPanel(width, height int) string {
 	} else {
 		prefixLen := len(v.Prefixes)
 		endIdx := min(totalItems, objectOffset+maxItems)
-
 		for i := objectOffset; i < endIdx; i++ {
 			var display string
 			if i < prefixLen {
@@ -219,7 +225,7 @@ func (v ExplorerView) renderCenterPanel(width, height int) string {
 				display = fmt.Sprintf("📁 %-*s %9s %12s", maxNameW, name, "[DIR]", "-")
 			} else {
 				objIdx := i - prefixLen
-				obj := v.Objects[objIdx]
+				obj := visibleObjects[objIdx]
 				name := obj.Key
 				if v.CurrentPrefix != "" {
 					name = strings.TrimPrefix(name, v.CurrentPrefix)

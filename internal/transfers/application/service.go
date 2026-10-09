@@ -677,3 +677,16 @@ func (s *TransferService) ListJobs(ctx context.Context, accountID string, status
 	}
 	return s.repo.ListJobs(ctx, accountID, status)
 }
+func (s *TransferService) UpdateJobStatus(ctx context.Context, jobID string, status domain.JobStatus, errMsg string) error {
+	if s.repo == nil {
+		return nil
+	}
+	return s.repo.UpdateJobStatus(ctx, jobID, status, errMsg)
+}
+
+func (s *TransferService) UpdateJobProgress(ctx context.Context, jobID string, bytesTransferred int64) error {
+	if s.repo == nil {
+		return nil
+	}
+	return s.repo.UpdateJobProgress(ctx, jobID, bytesTransferred)
+}
