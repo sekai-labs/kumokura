@@ -2,6 +2,7 @@ package adapters_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -39,6 +40,29 @@ func TestLocalScanner(t *testing.T) {
 	assert.Contains(t, entries, "file1.txt")
 	assert.NotEmpty(t, entries["file1.txt"].Checksum)
 	assert.Equal(t, int64(11), entries["file1.txt"].Size)
+}
+
+func TestLocalScanner_ParallelHashing(t *testing.T) {
+	tmp := t.TempDir()
+
+	for i := range 20 {
+		filePath := filepath.Join(tmp, filepath.Join(fmt.Sprintf("dir%d", i%3), fmt.Sprintf("file%d.dat", i)))
+		require.NoError(t, os.MkdirAll(filepath.Dir(filePath), 0755))
+		require.NoError(t, os.WriteFile(filePath, []byte(fmt.Sprintf("data-content-%d", i)), 0644))
+	}
+
+	scanner := adapters.NewLocalScanner(true)
+	ctx := context.Background()
+
+	entries, err := scanner.Scan(ctx, tmp, domain.Filter{})
+	require.NoError(t, err)
+	assert.Len(t, entries, 20)
+
+	for _, entry := range entries {
+		assert.NotEmpty(t, entry.Checksum)
+		assert.NotEmpty(t, entry.ETag)
+		assert.False(t, entry.IsDir)
+	}
 }
 
 func TestSQLiteSyncRepository(t *testing.T) {

@@ -384,7 +384,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.tabBar.Active = 3
 			cmds = append(cmds, m.loadSyncJobsCmd())
 		default:
-			if m.activeTab == 0 {
+			if m.activeTab == 0 || m.activeTab == 1 {
 				m, cmds = m.handleExplorerKeys(msg, cmds)
 			}
 		}
@@ -1006,8 +1006,13 @@ func (m Model) downloadFolderCmd(bucket, prefix, localDestDir string) tea.Cmd {
 				if relKey == "" {
 					continue
 				}
+				cleanRelKey := filepath.Clean(filepath.FromSlash(relKey))
+				if cleanRelKey == "." || cleanRelKey == ".." || strings.HasPrefix(cleanRelKey, ".."+string(filepath.Separator)) {
+					failedCount++
+					continue
+				}
 
-				targetFilePath := filepath.Join(localDestDir, filepath.FromSlash(relKey))
+				targetFilePath := filepath.Join(localDestDir, cleanRelKey)
 				if err := os.MkdirAll(filepath.Dir(targetFilePath), 0755); err != nil {
 					failedCount++
 					continue

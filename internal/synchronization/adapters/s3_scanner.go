@@ -54,6 +54,10 @@ func (s *S3Scanner) Scan(ctx context.Context, prefix string, filter domain.Filte
 			}
 
 			relPath := strings.TrimPrefix(key, normPrefix)
+			cleanRel := strings.TrimPrefix(relPath, "/")
+			if cleanRel == ".." || strings.HasPrefix(cleanRel, "../") || strings.Contains(cleanRel, "/../") {
+				continue
+			}
 			if !filter.Matches(relPath) {
 				continue
 			}

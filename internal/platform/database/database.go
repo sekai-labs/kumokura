@@ -14,15 +14,15 @@ type DB struct {
 }
 
 func Open(dbPath string) (*DB, error) {
-	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)", dbPath)
+	dsn := fmt.Sprintf("file:%s?_journal_mode=WAL&_busy_timeout=10000&_synchronous=NORMAL&_foreign_keys=ON&_cache_size=-64000", dbPath)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-	db.SetConnMaxLifetime(time.Hour)
+	db.SetMaxOpenConns(16)
+	db.SetMaxIdleConns(8)
+	db.SetConnMaxLifetime(1 * time.Hour)
 
 	if err := db.Ping(); err != nil {
 		_ = db.Close()

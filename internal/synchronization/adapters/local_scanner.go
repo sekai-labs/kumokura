@@ -6,8 +6,12 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
 
 	"github.com/sekai-labs/kumokura/internal/synchronization/domain"
 	"github.com/sekai-labs/kumokura/internal/synchronization/ports"
@@ -32,7 +36,14 @@ func (s *LocalScanner) Scan(ctx context.Context, rootDir string, filter domain.F
 		return nil, fmt.Errorf("resolve local root %s: %w", rootDir, err)
 	}
 
-	err = filepath.Walk(absRoot, func(p string, info os.FileInfo, err error) error {
+	type pendingHashEntry struct {
+		absPath string
+		entry   *domain.FileEntry
+	}
+
+	var pendingHashing []pendingHashEntry
+
+	err = filepath.WalkDir(absRoot, func(p string, d fs.DirEntry, err error) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -52,13 +63,20 @@ func (s *LocalScanner) Scan(ctx context.Context, rootDir string, filter domain.F
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-
-		if info.IsDir() {
+		if rel == ".." || strings.HasPrefix(rel, "../") || strings.Contains(rel, "/../") {
+			return nil
+		}
+		if d.IsDir() {
 			return nil
 		}
 
 		if !filter.Matches(rel) {
 			return nil
+		}
+
+		info, err := d.Info()
+		if err != nil {
+			return err
 		}
 
 		entry := &domain.FileEntry{
@@ -69,11 +87,10 @@ func (s *LocalScanner) Scan(ctx context.Context, rootDir string, filter domain.F
 		}
 
 		if s.CalculateChecksums {
-			hash, err := calculateLocalMD5(p)
-			if err == nil {
-				entry.Checksum = hash
-				entry.ETag = hash
-			}
+			pendingHashing = append(pendingHashing, pendingHashEntry{
+				absPath: p,
+				entry:   entry,
+			})
 		}
 
 		results[rel] = entry
@@ -82,6 +99,65 @@ func (s *LocalScanner) Scan(ctx context.Context, rootDir string, filter domain.F
 
 	if err != nil {
 		return nil, fmt.Errorf("walk local directory %s: %w", rootDir, err)
+	}
+
+	if s.CalculateChecksums && len(pendingHashing) > 0 {
+		numWorkers := runtime.NumCPU() * 2
+		if numWorkers < 1 {
+			numWorkers = 1
+		}
+		if numWorkers > len(pendingHashing) {
+			numWorkers = len(pendingHashing)
+		}
+
+		jobsCh := make(chan pendingHashEntry, numWorkers*2)
+		var wg sync.WaitGroup
+		var hashErr error
+		var errMu sync.Mutex
+
+		for range numWorkers {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for item := range jobsCh {
+					select {
+					case <-ctx.Done():
+						errMu.Lock()
+						if hashErr == nil {
+							hashErr = ctx.Err()
+						}
+						errMu.Unlock()
+						return
+					default:
+					}
+
+					hash, err := calculateLocalMD5(item.absPath)
+					if err == nil {
+						item.entry.Checksum = hash
+						item.entry.ETag = hash
+					}
+				}
+			}()
+		}
+
+		for _, item := range pendingHashing {
+			select {
+			case <-ctx.Done():
+				errMu.Lock()
+				if hashErr == nil {
+					hashErr = ctx.Err()
+				}
+				errMu.Unlock()
+				break
+			case jobsCh <- item:
+			}
+		}
+		close(jobsCh)
+		wg.Wait()
+
+		if hashErr != nil {
+			return nil, hashErr
+		}
 	}
 
 	return results, nil

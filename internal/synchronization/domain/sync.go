@@ -174,3 +174,14 @@ func TimestampsMatchWithTolerance(t1, t2 time.Time, tolerance time.Duration) boo
 	}
 	return diff <= tolerance
 }
+
+func ValidateSyncPath(p string) error {
+	if strings.Contains(p, "\x00") {
+		return fmt.Errorf("path contains null byte: %q", p)
+	}
+	clean := path.Clean(strings.ReplaceAll(p, "\\", "/"))
+	if clean == ".." || strings.HasPrefix(clean, "../") || strings.Contains(clean, "/../") {
+		return fmt.Errorf("path traversal detected: %q", p)
+	}
+	return nil
+}

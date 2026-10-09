@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -120,4 +121,14 @@ func TestRootHelp(t *testing.T) {
 	assert.Contains(t, out, "sync")
 	assert.Contains(t, out, "transfer")
 	assert.Contains(t, out, "config")
+}
+
+func TestDetermineExitCode(t *testing.T) {
+	assert.Equal(t, cli.ExitSuccess, cli.DetermineExitCode(nil))
+	assert.Equal(t, cli.ExitGeneral, cli.DetermineExitCode(errors.New("some general failure")))
+	assert.Equal(t, cli.ExitNetwork, cli.DetermineExitCode(errors.New("connection timed out")))
+	assert.Equal(t, cli.ExitNetwork, cli.DetermineExitCode(errors.New("dial tcp: lookup host: no such host")))
+	assert.Equal(t, cli.ExitUsage, cli.DetermineExitCode(errors.New("unknown command \"foo\" for \"kumokura\"")))
+	assert.Equal(t, cli.ExitUsage, cli.DetermineExitCode(errors.New("unknown flag: --invalid")))
+	assert.Equal(t, cli.ExitUsage, cli.DetermineExitCode(errors.New("accepts 1 arg(s), received 0")))
 }

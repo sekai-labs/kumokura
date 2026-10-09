@@ -23,7 +23,18 @@ func (b *StatusBar) Render(width int, activeHelp []string, throughput float64, p
 		notifText := notification
 		maxNotifLen := width * 40 / 100
 		if maxNotifLen > 10 && lipgloss.Width(notifText) > maxNotifLen {
-			notifText = notifText[:maxNotifLen-1] + "…"
+			targetW := maxNotifLen - 1
+			var curW int
+			var runes []rune
+			for _, r := range notifText {
+				rw := lipgloss.Width(string(r))
+				if curW+rw > targetW {
+					break
+				}
+				curW += rw
+				runes = append(runes, r)
+			}
+			notifText = string(runes) + "…"
 		}
 		leftParts = append(leftParts, b.styles.WarningPill.Render(notifText))
 	} else if throughput > 0 {

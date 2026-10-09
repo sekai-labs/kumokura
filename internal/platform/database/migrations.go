@@ -100,6 +100,36 @@ CREATE TABLE IF NOT EXISTS transfer_checkpoints (
 CREATE INDEX IF NOT EXISTS idx_transfer_checkpoints_job ON transfer_checkpoints(job_id, status);
 `,
 	},
+	{
+		version: 3,
+		name:    "performance_indices",
+		sql: `
+CREATE TABLE IF NOT EXISTS transfer_parts (
+    job_id TEXT NOT NULL,
+    part_number INTEGER NOT NULL,
+    byte_offset INTEGER NOT NULL,
+    size INTEGER NOT NULL,
+    etag TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (job_id, part_number)
+);
+
+CREATE TABLE IF NOT EXISTS sync_history (
+    id TEXT PRIMARY KEY,
+    plan_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    details TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_transfer_jobs_account_status ON transfer_jobs(account_id, status);
+CREATE INDEX IF NOT EXISTS idx_transfer_parts_job ON transfer_parts(job_id, part_number);
+CREATE INDEX IF NOT EXISTS idx_sync_history_plan ON sync_history(plan_id);
+CREATE INDEX IF NOT EXISTS idx_sync_jobs_status ON sync_jobs(status);
+`,
+	},
 }
 
 func RunMigrations(ctx context.Context, db *sql.DB) error {

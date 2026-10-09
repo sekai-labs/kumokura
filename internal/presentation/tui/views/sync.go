@@ -49,21 +49,54 @@ func (v *SyncView) Render(width, height int) string {
 			}
 
 			jobID := j.ID
-			if len(jobID) > 22 {
-				jobID = jobID[:21] + "…"
+			if lipgloss.Width(jobID) > 22 {
+				targetW := 21
+				var curW int
+				var runes []rune
+				for _, r := range jobID {
+					rw := lipgloss.Width(string(r))
+					if curW+rw > targetW {
+						break
+					}
+					curW += rw
+					runes = append(runes, r)
+				}
+				jobID = string(runes) + "…"
 			}
 
 			src := j.SourceBucket
 			if j.SourcePrefix != "" {
 				src += "/" + j.SourcePrefix
 			}
-			if len(src) > 18 {
-				src = src[:17] + "…"
+			if lipgloss.Width(src) > 18 {
+				targetW := 17
+				var curW int
+				var runes []rune
+				for _, r := range src {
+					rw := lipgloss.Width(string(r))
+					if curW+rw > targetW {
+						break
+					}
+					curW += rw
+					runes = append(runes, r)
+				}
+				src = string(runes) + "…"
 			}
 
 			dst := j.DestinationPath
-			if len(dst) > 18 {
-				dst = dst[:17] + "…"
+			if lipgloss.Width(dst) > 18 {
+				targetW := 17
+				var curW int
+				var runes []rune
+				for _, r := range dst {
+					rw := lipgloss.Width(string(r))
+					if curW+rw > targetW {
+						break
+					}
+					curW += rw
+					runes = append(runes, r)
+				}
+				dst = string(runes) + "…"
 			}
 
 			line := fmt.Sprintf("%-24s %-12s %-20s %-20s %-10s",

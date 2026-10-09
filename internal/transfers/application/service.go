@@ -72,6 +72,9 @@ func (s *TransferService) GetMaxConcurrency() int {
 }
 
 func (s *TransferService) SubmitJob(ctx context.Context, job domain.TransferJob) (string, error) {
+	if err := domain.ValidateTransferJob(job); err != nil {
+		return "", err
+	}
 	if job.Status == "" {
 		job.Status = domain.JobStatusPending
 	}
@@ -304,14 +307,145 @@ func (s *TransferService) runMultipartUpload(ctx context.Context, job domain.Tra
 			transferred += p.Size
 		}
 	}
+	concurrency := s.GetMaxConcurrency()
+	if concurrency <= 0 {
+		concurrency = 1
+	}
 
-	sem := make(chan struct{}, s.maxConcurrency)
+	tasksCh := make(chan domain.TransferPart, concurrency*2)
 	var wg sync.WaitGroup
 	var uploadErr error
 	var errMu sync.Mutex
+	var activeWorkers sync.WaitGroup
 
 	startTime := time.Now()
 
+	const checkpointBatchThreshold = 20
+	const checkpointFlushInterval = 500 * time.Millisecond
+
+	checkpointCh := make(chan domain.TransferPart, concurrency*4)
+	checkpointDone := make(chan struct{})
+
+	go func() {
+		defer close(checkpointDone)
+		var batch []domain.TransferPart
+		ticker := time.NewTicker(checkpointFlushInterval)
+		defer ticker.Stop()
+
+		flushBatch := func() {
+			if len(batch) == 0 {
+				return
+			}
+			_ = s.repo.SaveCheckpoints(context.Background(), batch)
+			batch = batch[:0]
+		}
+
+		for {
+			select {
+			case cp, ok := <-checkpointCh:
+				if !ok {
+					flushBatch()
+					return
+				}
+				batch = append(batch, cp)
+				if len(batch) >= checkpointBatchThreshold {
+					flushBatch()
+				}
+			case <-ticker.C:
+				flushBatch()
+			}
+		}
+	}()
+
+	for range concurrency {
+		activeWorkers.Add(1)
+		go func() {
+			defer activeWorkers.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case part, ok := <-tasksCh:
+					if !ok {
+						return
+					}
+
+					var etag string
+					var partErr error
+
+					for attempt := range 3 {
+						if ctx.Err() != nil {
+							partErr = ctx.Err()
+							break
+						}
+						if s.worker != nil {
+							etag, partErr = s.worker.UploadPartChunk(ctx, job.Bucket, job.Key, uploadID, part, file)
+						}
+						if partErr == nil {
+							break
+						}
+						jitter := time.Duration(rand.IntN(100)) * time.Millisecond
+						backoff := (time.Duration(1<<attempt) * 100 * time.Millisecond) + jitter
+						select {
+						case <-ctx.Done():
+							partErr = ctx.Err()
+						case <-time.After(backoff):
+						}
+						if partErr != nil && ctx.Err() != nil {
+							break
+						}
+					}
+
+					if partErr != nil {
+						errMu.Lock()
+						if uploadErr == nil {
+							uploadErr = partErr
+						}
+						errMu.Unlock()
+						wg.Done()
+						return
+					}
+
+					part.Status = domain.PartStatusCompleted
+					part.ETag = etag
+					part.UpdatedAt = time.Now()
+					checkpointCh <- part
+
+					curr := atomic.AddInt64(&transferred, part.Size)
+					_ = s.repo.UpdateJobProgress(context.Background(), job.ID, curr)
+
+					elapsed := time.Since(startTime)
+					speed := float64(curr) / elapsed.Seconds()
+					var eta time.Duration
+					if speed > 0 {
+						rem := totalSize - curr
+						eta = time.Duration(float64(rem)/speed) * time.Second
+					}
+
+					metrics := domain.TransferMetrics{
+						BytesTransferred: curr,
+						TotalBytes:       totalSize,
+						SpeedBps:         speed,
+						ETA:              eta,
+						Elapsed:          elapsed,
+					}
+
+					s.metricsMu.Lock()
+					s.metrics[job.ID] = &metrics
+					s.metricsMu.Unlock()
+
+					s.publisher.Publish(ports.TransferEvent{
+						JobID:   job.ID,
+						Status:  domain.JobStatusRunning,
+						Metrics: metrics,
+					})
+					wg.Done()
+				}
+			}
+		}()
+	}
+
+	var feedCancelled bool
 	for _, p := range checkpoints {
 		if p.Status == domain.PartStatusCompleted {
 			continue
@@ -319,77 +453,30 @@ func (s *TransferService) runMultipartUpload(ctx context.Context, job domain.Tra
 
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
-		case sem <- struct{}{}:
+			feedCancelled = true
+			break
+		case tasksCh <- p:
+			wg.Add(1)
 		}
-
-		wg.Add(1)
-		go func(part domain.TransferPart) {
-			defer func() {
-				<-sem
-				wg.Done()
-			}()
-
-			var etag string
-			var partErr error
-
-			for attempt := range 3 {
-				if s.worker != nil {
-					etag, partErr = s.worker.UploadPartChunk(ctx, job.Bucket, job.Key, uploadID, part, file)
-				}
-				if partErr == nil {
-					break
-				}
-				jitter := time.Duration(rand.IntN(100)) * time.Millisecond
-				backoff := (time.Duration(1<<attempt) * 100 * time.Millisecond) + jitter
-				time.Sleep(backoff)
-			}
-
-			if partErr != nil {
-				errMu.Lock()
-				if uploadErr == nil {
-					uploadErr = partErr
-				}
-				errMu.Unlock()
-				return
-			}
-
-			part.Status = domain.PartStatusCompleted
-			part.ETag = etag
-			_ = s.repo.UpdateCheckpoint(context.Background(), part)
-
-			curr := atomic.AddInt64(&transferred, part.Size)
-			_ = s.repo.UpdateJobProgress(context.Background(), job.ID, curr)
-
-			elapsed := time.Since(startTime)
-			speed := float64(curr) / elapsed.Seconds()
-			var eta time.Duration
-			if speed > 0 {
-				rem := totalSize - curr
-				eta = time.Duration(float64(rem)/speed) * time.Second
-			}
-
-			metrics := domain.TransferMetrics{
-				BytesTransferred: curr,
-				TotalBytes:       totalSize,
-				SpeedBps:         speed,
-				ETA:              eta,
-				Elapsed:          elapsed,
-			}
-
-			s.metricsMu.Lock()
-			s.metrics[job.ID] = &metrics
-			s.metricsMu.Unlock()
-
-			s.publisher.Publish(ports.TransferEvent{
-				JobID:   job.ID,
-				Status:  domain.JobStatusRunning,
-				Metrics: metrics,
-			})
-		}(p)
+		if feedCancelled {
+			break
+		}
 	}
 
-	wg.Wait()
+	close(tasksCh)
+
+	if !feedCancelled {
+		wg.Wait()
+	}
+
+	activeWorkers.Wait()
+
+	close(checkpointCh)
+	<-checkpointDone
+
+	if feedCancelled {
+		return ctx.Err()
+	}
 
 	if uploadErr != nil {
 		return uploadErr
@@ -455,11 +542,92 @@ func (s *TransferService) runMultipartDownload(ctx context.Context, job domain.T
 		checkpoints = parts
 	}
 
-	sem := make(chan struct{}, s.maxConcurrency)
+	concurrency := s.GetMaxConcurrency()
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+
+	tasksCh := make(chan domain.TransferPart, concurrency*2)
 	var wg sync.WaitGroup
 	var downloadErr error
 	var errMu sync.Mutex
+	var activeWorkers sync.WaitGroup
 
+	const checkpointBatchThreshold = 20
+	const checkpointFlushInterval = 500 * time.Millisecond
+
+	checkpointCh := make(chan domain.TransferPart, concurrency*4)
+	checkpointDone := make(chan struct{})
+
+	go func() {
+		defer close(checkpointDone)
+		var batch []domain.TransferPart
+		ticker := time.NewTicker(checkpointFlushInterval)
+		defer ticker.Stop()
+
+		flushBatch := func() {
+			if len(batch) == 0 {
+				return
+			}
+			_ = s.repo.SaveCheckpoints(context.Background(), batch)
+			batch = batch[:0]
+		}
+
+		for {
+			select {
+			case cp, ok := <-checkpointCh:
+				if !ok {
+					flushBatch()
+					return
+				}
+				batch = append(batch, cp)
+				if len(batch) >= checkpointBatchThreshold {
+					flushBatch()
+				}
+			case <-ticker.C:
+				flushBatch()
+			}
+		}
+	}()
+
+	for range concurrency {
+		activeWorkers.Add(1)
+		go func() {
+			defer activeWorkers.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case part, ok := <-tasksCh:
+					if !ok {
+						return
+					}
+
+					var partErr error
+					if s.worker != nil {
+						partErr = s.worker.DownloadRangeChunk(ctx, job.Bucket, job.Key, part, destFile)
+					}
+
+					if partErr != nil {
+						errMu.Lock()
+						if downloadErr == nil {
+							downloadErr = partErr
+						}
+						errMu.Unlock()
+						wg.Done()
+						return
+					}
+
+					part.Status = domain.PartStatusCompleted
+					part.UpdatedAt = time.Now()
+					checkpointCh <- part
+					wg.Done()
+				}
+			}
+		}()
+	}
+
+	var feedCancelled bool
 	for _, p := range checkpoints {
 		if p.Status == domain.PartStatusCompleted {
 			continue
@@ -467,37 +635,31 @@ func (s *TransferService) runMultipartDownload(ctx context.Context, job domain.T
 
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
-		case sem <- struct{}{}:
+			feedCancelled = true
+			break
+		case tasksCh <- p:
+			wg.Add(1)
 		}
-
-		wg.Add(1)
-		go func(part domain.TransferPart) {
-			defer func() {
-				<-sem
-				wg.Done()
-			}()
-
-			var partErr error
-			if s.worker != nil {
-				partErr = s.worker.DownloadRangeChunk(ctx, job.Bucket, job.Key, part, destFile)
-			}
-
-			if partErr != nil {
-				errMu.Lock()
-				if downloadErr == nil {
-					downloadErr = partErr
-				}
-				errMu.Unlock()
-				return
-			}
-
-			part.Status = domain.PartStatusCompleted
-			_ = s.repo.UpdateCheckpoint(context.Background(), part)
-		}(p)
+		if feedCancelled {
+			break
+		}
 	}
 
-	wg.Wait()
+	close(tasksCh)
+
+	if !feedCancelled {
+		wg.Wait()
+	}
+
+	activeWorkers.Wait()
+
+	close(checkpointCh)
+	<-checkpointDone
+
+	if feedCancelled {
+		return ctx.Err()
+	}
+
 	return downloadErr
 }
 

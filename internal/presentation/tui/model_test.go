@@ -56,6 +56,38 @@ func TestTUI_TabSwitching(t *testing.T) {
 	m1, _ := updated4.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
 	updated1 := m1.(Model)
 	assert.Equal(t, 0, updated1.activeTab)
+	mTab1, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
+	uTab1 := mTab1.(Model)
+	assert.Equal(t, 0, uTab1.activeTab)
+	assert.Equal(t, 0, uTab1.explorerView.ActivePaneIndex)
+
+	mTab2, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	uTab2 := mTab2.(Model)
+	assert.Equal(t, 1, uTab2.activeTab)
+	assert.Equal(t, 1, uTab2.explorerView.ActivePaneIndex)
+
+	uTab2.explorerView.Buckets = []bucketDomain.Bucket{{Name: "b1"}}
+	uTab2.explorerView.Objects = []objDomain.Object{
+		{Key: "file1.txt", Size: 100},
+		{Key: "file2.txt", Size: 200},
+	}
+	assert.Equal(t, 0, uTab2.explorerView.SelectedObject)
+
+	mDown, _ := uTab2.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	uDown := mDown.(Model)
+	assert.Equal(t, 1, uDown.explorerView.SelectedObject)
+
+	mUp, _ := uDown.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
+	uUp := mUp.(Model)
+	assert.Equal(t, 0, uUp.explorerView.SelectedObject)
+
+	mG, _ := uUp.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}})
+	uG := mG.(Model)
+	assert.Equal(t, 1, uG.explorerView.SelectedObject)
+
+	mg, _ := uG.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	ug := mg.(Model)
+	assert.Equal(t, 0, ug.explorerView.SelectedObject)
 }
 
 func TestTUI_DataLoadedHandling(t *testing.T) {

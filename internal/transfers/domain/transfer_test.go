@@ -97,3 +97,30 @@ func TestCalculateAdaptivePartSize(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateTransferJob(t *testing.T) {
+	validJob := TransferJob{
+		ID:              "job-1",
+		Type:            TransferTypeDownload,
+		DestinationPath: "/tmp/file.txt",
+		Key:             "valid/key.txt",
+		TotalBytes:      100,
+	}
+	assert.NoError(t, ValidateTransferJob(validJob))
+
+	emptyID := validJob
+	emptyID.ID = ""
+	assert.ErrorIs(t, ValidateTransferJob(emptyID), ErrEmptyJobID)
+
+	negBytes := validJob
+	negBytes.TotalBytes = -1
+	assert.ErrorIs(t, ValidateTransferJob(negBytes), ErrZeroTotalBytes)
+
+	traversalKey := validJob
+	traversalKey.Key = "../etc/passwd"
+	assert.ErrorIs(t, ValidateTransferJob(traversalKey), ErrPathTraversal)
+
+	traversalDest := validJob
+	traversalDest.DestinationPath = "../etc/passwd"
+	assert.ErrorIs(t, ValidateTransferJob(traversalDest), ErrPathTraversal)
+}

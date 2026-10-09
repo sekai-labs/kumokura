@@ -57,8 +57,19 @@ func (t *TabBar) Render(width int, activeAccount string, activeRegion string, ac
 	}
 	if width >= 110 && activeBucket != "" {
 		bucketLabel := activeBucket
-		if len(bucketLabel) > 20 && width < 130 {
-			bucketLabel = bucketLabel[:19] + "…"
+		if lipgloss.Width(bucketLabel) > 20 && width < 130 {
+			targetW := 19
+			var curW int
+			var runes []rune
+			for _, r := range bucketLabel {
+				rw := lipgloss.Width(string(r))
+				if curW+rw > targetW {
+					break
+				}
+				curW += rw
+				runes = append(runes, r)
+			}
+			bucketLabel = string(runes) + "…"
 		}
 		rightParts = append(rightParts, t.styles.BadgeAccount.Render(fmt.Sprintf("Bucket: %s", bucketLabel)))
 	}

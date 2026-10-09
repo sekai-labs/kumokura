@@ -68,8 +68,8 @@ var DefaultKeyMap = KeyMap{
 		key.WithHelp("enter", "select/open"),
 	),
 	Back: key.NewBinding(
-		key.WithKeys("backspace", "esc"),
-		key.WithHelp("backspace", "back"),
+		key.WithKeys("backspace", "esc", "h", "left"),
+		key.WithHelp("backspace/h", "back"),
 	),
 	Tab: key.NewBinding(
 		key.WithKeys("tab"),

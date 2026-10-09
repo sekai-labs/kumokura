@@ -57,12 +57,16 @@ type DesktopApp struct {
 	accountList *widget.List
 	bucketList  *widget.List
 
-	objectTable      *widget.Table
-	emptyStateCard   *widget.Card
-	loadingContainer *fyne.Container
-	loadingBar       *widget.ProgressBarInfinite
-	loadingLabel     *widget.Label
-	centerContainer  *fyne.Container
+	objectTable         *widget.Table
+	emptyStateCard      *widget.Card
+	emptyStateMsg       *widget.Label
+	emptyUploadBtn      *widget.Button
+	emptyUploadDirBtn   *widget.Button
+	emptyClearFilterBtn *widget.Button
+	loadingContainer    *fyne.Container
+	loadingBar          *widget.ProgressBarInfinite
+	loadingLabel        *widget.Label
+	centerContainer     *fyne.Container
 
 	prefixNavLabel *widget.Label
 	upFolderBtn    *widget.Button
@@ -70,7 +74,7 @@ type DesktopApp struct {
 	openFolderBtn  *widget.Button
 	loadCancel     context.CancelFunc
 	loadSeq        uint64
-
+	inspectCancel  context.CancelFunc
 	detailsCard    *widget.Card
 	metadataLabel  *widget.Label
 	presignedLabel *widget.Entry
@@ -428,24 +432,30 @@ func (d *DesktopApp) buildCenterPanel() fyne.CanvasObject {
 	)
 	d.loadingContainer.Hide()
 
-	emptyMsg := widget.NewLabel("This bucket is empty.\nUse 'Upload File' or 'Upload Folder' to add items.")
-	emptyMsg.Wrapping = fyne.TextWrapWord
-	emptyUploadBtn := widget.NewButtonWithIcon("Upload File", theme.UploadIcon(), func() {
+	d.emptyStateMsg = widget.NewLabel("This bucket is empty.\nUse 'Upload File' or 'Upload Folder' to add items.")
+	d.emptyStateMsg.Wrapping = fyne.TextWrapWord
+	d.emptyUploadBtn = widget.NewButtonWithIcon("Upload File", theme.UploadIcon(), func() {
 		d.showUploadDialog()
 	})
-	emptyUploadFolderBtn := widget.NewButtonWithIcon("Upload Folder", theme.FolderNewIcon(), func() {
+	d.emptyUploadDirBtn = widget.NewButtonWithIcon("Upload Folder", theme.FolderNewIcon(), func() {
 		d.showUploadFolderDialog()
 	})
+	d.emptyClearFilterBtn = widget.NewButtonWithIcon("Clear Filter", theme.CancelIcon(), func() {
+		if d.searchEntry != nil {
+			d.searchEntry.SetText("")
+		}
+	})
+	d.emptyClearFilterBtn.Hide()
+	emptyActionsBox := container.NewHBox(d.emptyUploadBtn, d.emptyUploadDirBtn, d.emptyClearFilterBtn)
 	d.emptyStateCard = widget.NewCard(
 		"No Objects Found",
 		"",
 		container.NewVBox(
-			emptyMsg,
-			container.NewHBox(emptyUploadBtn, emptyUploadFolderBtn),
+			d.emptyStateMsg,
+			emptyActionsBox,
 		),
 	)
 	d.emptyStateCard.Hide()
-
 	d.centerContainer = container.NewStack(
 		d.objectTable,
 		d.emptyStateCard,
@@ -482,7 +492,7 @@ func (d *DesktopApp) buildRightPanel() fyne.CanvasObject {
 	d.previewContentEntry.SetPlaceHolder("Object content preview will appear here...")
 	d.previewContentEntry.Disable()
 
-	previewScroll := container.NewGridWrap(fyne.NewSize(320, 200), d.previewContentEntry)
+	previewScroll := container.NewGridWrap(fyne.NewSize(240, 160), d.previewContentEntry)
 
 	detailsContent := container.NewVBox(
 		widget.NewLabelWithStyle("Metadata", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
@@ -816,6 +826,36 @@ func (d *DesktopApp) updateTableViewState(loading bool, itemCount int) {
 		}
 		d.loadingContainer.Hide()
 		if itemCount == 0 {
+			d.mu.RLock()
+			query := d.searchQuery
+			d.mu.RUnlock()
+			if query != "" {
+				if d.emptyStateMsg != nil {
+					d.emptyStateMsg.SetText(fmt.Sprintf("No objects match query '%s'", query))
+				}
+				if d.emptyClearFilterBtn != nil {
+					d.emptyClearFilterBtn.Show()
+				}
+				if d.emptyUploadBtn != nil {
+					d.emptyUploadBtn.Hide()
+				}
+				if d.emptyUploadDirBtn != nil {
+					d.emptyUploadDirBtn.Hide()
+				}
+			} else {
+				if d.emptyStateMsg != nil {
+					d.emptyStateMsg.SetText("This bucket is empty.\nUse 'Upload File' or 'Upload Folder' to add items.")
+				}
+				if d.emptyClearFilterBtn != nil {
+					d.emptyClearFilterBtn.Hide()
+				}
+				if d.emptyUploadBtn != nil {
+					d.emptyUploadBtn.Show()
+				}
+				if d.emptyUploadDirBtn != nil {
+					d.emptyUploadDirBtn.Show()
+				}
+			}
 			d.emptyStateCard.Show()
 			d.objectTable.Hide()
 		} else {
@@ -982,9 +1022,12 @@ func (d *DesktopApp) handleTableRowSelected(idx int) {
 
 func (d *DesktopApp) selectObject(obj *objectDomain.Object) {
 	d.mu.Lock()
+	if d.inspectCancel != nil {
+		d.inspectCancel()
+		d.inspectCancel = nil
+	}
 	d.selectedObject = obj
 	d.mu.Unlock()
-
 	if d.openFolderBtn != nil {
 		if obj != nil && obj.IsPrefix {
 			d.openFolderBtn.Enable()
@@ -1053,10 +1096,14 @@ func (d *DesktopApp) selectObject(obj *objectDomain.Object) {
 		d.previewContentEntry.SetText("")
 	}
 
-	go d.fetchObjectDetailsAndTags(obj.Key)
+	ctx, cancel := context.WithCancel(context.Background())
+	d.mu.Lock()
+	d.inspectCancel = cancel
+	d.mu.Unlock()
+	go d.fetchObjectDetailsAndTags(ctx, obj.Key)
 }
 
-func (d *DesktopApp) fetchObjectDetailsAndTags(key string) {
+func (d *DesktopApp) fetchObjectDetailsAndTags(ctx context.Context, key string) {
 	d.mu.RLock()
 	acc := d.selectedAccount
 	bucket := d.selectedBucket
@@ -1067,7 +1114,12 @@ func (d *DesktopApp) fetchObjectDetailsAndTags(key string) {
 		return
 	}
 
-	ctx := context.Background()
+	select {
+	case <-ctx.Done():
+		return
+	default:
+	}
+
 	oService, err := d.container.CreateObjectService(ctx, acc.Name)
 	if err != nil {
 		return

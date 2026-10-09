@@ -40,7 +40,7 @@ func NewExplorerView(s styles.Styles) ExplorerView {
 	}
 }
 
-func (v *ExplorerView) Render(width, height int) string {
+func (v ExplorerView) Render(width, height int) string {
 	if width < 80 || height < 24 {
 		return lipgloss.NewStyle().
 			Width(width).
@@ -90,7 +90,7 @@ func (v *ExplorerView) Render(width, height int) string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, panels...)
 }
 
-func (v *ExplorerView) renderLeftPanel(width, height int) string {
+func (v ExplorerView) renderLeftPanel(width, height int) string {
 	isActive := v.ActivePaneIndex == 0
 	prefixText := ""
 	if isActive {
@@ -103,17 +103,19 @@ func (v *ExplorerView) renderLeftPanel(width, height int) string {
 		maxItems = 1
 	}
 
-	if v.SelectedBucket >= len(v.Buckets) {
-		v.SelectedBucket = max(0, len(v.Buckets)-1)
+	selectedBucket := v.SelectedBucket
+	if selectedBucket >= len(v.Buckets) {
+		selectedBucket = max(0, len(v.Buckets)-1)
 	}
 
-	if v.SelectedBucket < v.BucketOffset {
-		v.BucketOffset = v.SelectedBucket
-	} else if v.SelectedBucket >= v.BucketOffset+maxItems {
-		v.BucketOffset = v.SelectedBucket - maxItems + 1
+	bucketOffset := v.BucketOffset
+	if selectedBucket < bucketOffset {
+		bucketOffset = selectedBucket
+	} else if selectedBucket >= bucketOffset+maxItems {
+		bucketOffset = selectedBucket - maxItems + 1
 	}
-	if v.BucketOffset < 0 {
-		v.BucketOffset = 0
+	if bucketOffset < 0 {
+		bucketOffset = 0
 	}
 
 	var rows []string
@@ -121,22 +123,20 @@ func (v *ExplorerView) renderLeftPanel(width, height int) string {
 		emptyMsg := v.styles.StatusDesc.Render("No buckets found")
 		rows = append(rows, emptyMsg)
 	} else {
-		endIdx := min(len(v.Buckets), v.BucketOffset+maxItems)
-		for i := v.BucketOffset; i < endIdx; i++ {
+		endIdx := min(len(v.Buckets), bucketOffset+maxItems)
+		for i := bucketOffset; i < endIdx; i++ {
 			b := v.Buckets[i]
 			name := b.Name
 			availTextW := width - 4
 			if availTextW < 4 {
 				availTextW = 4
 			}
-			if lipgloss.Width(name) > availTextW {
-				name = name[:availTextW-1] + "…"
-			}
+			name = truncateString(name, availTextW)
 
 			var rowStr string
-			if i == v.SelectedBucket && isActive {
+			if i == selectedBucket && isActive {
 				rowStr = v.styles.SelectedRow.Width(width).Render(fmt.Sprintf(" ▶ %s", name))
-			} else if i == v.SelectedBucket {
+			} else if i == selectedBucket {
 				rowStr = v.styles.SelectedRow.Width(width).Render(fmt.Sprintf(" ▷ %s", name))
 			} else {
 				rowStr = v.styles.NormalRow.Width(width).Render(fmt.Sprintf("   %s", name))
@@ -153,7 +153,7 @@ func (v *ExplorerView) renderLeftPanel(width, height int) string {
 	return style.Width(width).Height(height).Render(content)
 }
 
-func (v *ExplorerView) renderCenterPanel(width, height int) string {
+func (v ExplorerView) renderCenterPanel(width, height int) string {
 	isActive := v.ActivePaneIndex == 1
 	bucketName := v.ActiveBucket
 	if bucketName == "" && len(v.Buckets) > v.SelectedBucket {
@@ -162,7 +162,7 @@ func (v *ExplorerView) renderCenterPanel(width, height int) string {
 	s3Uri := fmt.Sprintf("s3://%s/%s", bucketName, v.CurrentPrefix)
 	availTitle := width - 20
 	if availTitle > 10 && lipgloss.Width(s3Uri) > availTitle {
-		s3Uri = "…" + s3Uri[len(s3Uri)-availTitle+1:]
+		s3Uri = truncateLeadingString(s3Uri, availTitle)
 	}
 	titleText := fmt.Sprintf("OBJECT EXPLORER: %s", s3Uri)
 	title := v.styles.PanelTitle.Render(titleText)
@@ -171,17 +171,20 @@ func (v *ExplorerView) renderCenterPanel(width, height int) string {
 	if maxItems < 1 {
 		maxItems = 1
 	}
-	if v.SelectedObject >= totalItems {
-		v.SelectedObject = max(0, totalItems-1)
+
+	selectedObject := v.SelectedObject
+	if selectedObject >= totalItems {
+		selectedObject = max(0, totalItems-1)
 	}
 
-	if v.SelectedObject < v.ObjectOffset {
-		v.ObjectOffset = v.SelectedObject
-	} else if v.SelectedObject >= v.ObjectOffset+maxItems {
-		v.ObjectOffset = v.SelectedObject - maxItems + 1
+	objectOffset := v.ObjectOffset
+	if selectedObject < objectOffset {
+		objectOffset = selectedObject
+	} else if selectedObject >= objectOffset+maxItems {
+		objectOffset = selectedObject - maxItems + 1
 	}
-	if v.ObjectOffset < 0 {
-		v.ObjectOffset = 0
+	if objectOffset < 0 {
+		objectOffset = 0
 	}
 
 	var rows []string
@@ -198,9 +201,9 @@ func (v *ExplorerView) renderCenterPanel(width, height int) string {
 		rows = append(rows, emptyMsg)
 	} else {
 		prefixLen := len(v.Prefixes)
-		endIdx := min(totalItems, v.ObjectOffset+maxItems)
+		endIdx := min(totalItems, objectOffset+maxItems)
 
-		for i := v.ObjectOffset; i < endIdx; i++ {
+		for i := objectOffset; i < endIdx; i++ {
 			var display string
 			if i < prefixLen {
 				p := v.Prefixes[i]
@@ -212,9 +215,7 @@ func (v *ExplorerView) renderCenterPanel(width, height int) string {
 				if maxNameW < 8 {
 					maxNameW = 8
 				}
-				if lipgloss.Width(name) > maxNameW {
-					name = name[:maxNameW-1] + "…"
-				}
+				name = truncateString(name, maxNameW)
 				display = fmt.Sprintf("📁 %-*s %9s %12s", maxNameW, name, "[DIR]", "-")
 			} else {
 				objIdx := i - prefixLen
@@ -233,17 +234,15 @@ func (v *ExplorerView) renderCenterPanel(width, height int) string {
 				if nameWidth < 8 {
 					nameWidth = 8
 				}
-				if lipgloss.Width(name) > nameWidth {
-					name = name[:nameWidth-1] + "…"
-				}
+				name = truncateString(name, nameWidth)
 
 				display = fmt.Sprintf("📄 %-*s %9s %12s", nameWidth, name, sizeStr, lastModStr)
 			}
 
 			var rowStr string
-			if i == v.SelectedObject && isActive {
+			if i == selectedObject && isActive {
 				rowStr = v.styles.SelectedRow.Width(width).Render(fmt.Sprintf(" ▶ %s", display))
-			} else if i == v.SelectedObject {
+			} else if i == selectedObject {
 				rowStr = v.styles.SelectedRow.Width(width).Render(fmt.Sprintf(" ▷ %s", display))
 			} else {
 				rowStr = v.styles.NormalRow.Width(width).Render(fmt.Sprintf("   %s", display))
@@ -260,7 +259,7 @@ func (v *ExplorerView) renderCenterPanel(width, height int) string {
 	return style.Width(width).Height(height).Render(content)
 }
 
-func (v *ExplorerView) renderRightPanel(width, height int) string {
+func (v ExplorerView) renderRightPanel(width, height int) string {
 	isActive := v.ActivePaneIndex == 2
 	title := v.styles.PanelTitle.Render("OBJECT INSPECTOR")
 	var lines []string
@@ -312,13 +311,56 @@ func (v *ExplorerView) renderRightPanel(width, height int) string {
 }
 
 func truncateString(s string, maxLen int) string {
-	if maxLen < 3 {
-		maxLen = 3
+	if maxLen <= 0 {
+		return ""
 	}
 	if lipgloss.Width(s) <= maxLen {
 		return s
 	}
-	return s[:maxLen-1] + "…"
+	if maxLen <= 1 {
+		return "…"
+	}
+	targetWidth := maxLen - 1
+	var curWidth int
+	var runes []rune
+	for _, r := range s {
+		rw := lipgloss.Width(string(r))
+		if curWidth+rw > targetWidth {
+			break
+		}
+		curWidth += rw
+		runes = append(runes, r)
+	}
+	return string(runes) + "…"
+}
+
+func truncateLeadingString(s string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
+	if lipgloss.Width(s) <= maxLen {
+		return s
+	}
+	if maxLen <= 1 {
+		return "…"
+	}
+	targetWidth := maxLen - 1
+	runes := []rune(s)
+	var curWidth int
+	var chosen []rune
+	for i := len(runes) - 1; i >= 0; i-- {
+		rw := lipgloss.Width(string(runes[i]))
+		if curWidth+rw > targetWidth {
+			break
+		}
+		curWidth += rw
+		chosen = append([]rune{runes[i]}, chosen...)
+	}
+	return "…" + string(chosen)
+}
+
+func TruncateSafe(s string, maxLen int) string {
+	return truncateString(s, maxLen)
 }
 
 func SanitizePreviewContent(data []byte, maxWidth, maxLines int) []string {
@@ -391,7 +433,7 @@ func SanitizePreviewContent(data []byte, maxWidth, maxLines int) []string {
 		}
 		lineStr := b.String()
 		if lipgloss.Width(lineStr) > maxWidth {
-			lineStr = lineStr[:maxWidth-1] + "…"
+			lineStr = truncateString(lineStr, maxWidth)
 		}
 		cleanLines = append(cleanLines, lineStr)
 	}

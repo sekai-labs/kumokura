@@ -57,3 +57,11 @@ func TestTimestampTolerance(t *testing.T) {
 	assert.True(t, domain.TimestampsMatchWithTolerance(t1, t2, 2*time.Second))
 	assert.False(t, domain.TimestampsMatchWithTolerance(t1, t2, 1*time.Second))
 }
+
+func TestValidateSyncPath(t *testing.T) {
+	assert.NoError(t, domain.ValidateSyncPath("folder/file.txt"))
+	assert.NoError(t, domain.ValidateSyncPath("file.txt"))
+	assert.Error(t, domain.ValidateSyncPath("../file.txt"))
+	assert.Error(t, domain.ValidateSyncPath("folder/../../file.txt"))
+	assert.Error(t, domain.ValidateSyncPath("folder/\x00/file.txt"))
+}

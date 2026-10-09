@@ -2,6 +2,8 @@ package domain
 
 import (
 	"errors"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -9,6 +11,7 @@ var (
 	ErrInvalidJobStateTransition = errors.New("invalid job state transition")
 	ErrEmptyJobID                = errors.New("job ID cannot be empty")
 	ErrZeroTotalBytes            = errors.New("total bytes cannot be negative")
+	ErrPathTraversal             = errors.New("path traversal detected in transfer path")
 )
 
 type TransferType string
@@ -133,4 +136,26 @@ func CalculateAdaptivePartSize(totalSize int64) int64 {
 		return maxPartSize
 	}
 	return aligned
+}
+
+func ValidateTransferJob(job TransferJob) error {
+	if job.ID == "" {
+		return ErrEmptyJobID
+	}
+	if job.TotalBytes < 0 {
+		return ErrZeroTotalBytes
+	}
+	if job.Key != "" {
+		cleanKey := filepath.ToSlash(filepath.Clean(job.Key))
+		if cleanKey == ".." || strings.HasPrefix(cleanKey, "../") || strings.Contains(cleanKey, "/../") {
+			return ErrPathTraversal
+		}
+	}
+	if job.Type == TransferTypeDownload && job.DestinationPath != "" {
+		cleanDest := filepath.Clean(job.DestinationPath)
+		if cleanDest == ".." || strings.HasPrefix(cleanDest, ".."+string(filepath.Separator)) {
+			return ErrPathTraversal
+		}
+	}
+	return nil
 }

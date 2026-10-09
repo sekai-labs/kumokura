@@ -146,6 +146,21 @@ func TestDesktopAppLoadingAndEmptyState(t *testing.T) {
 	assert.False(t, app.objectTable.Visible())
 	assert.True(t, app.emptyStateCard.Visible())
 
+	app.searchQuery = "testfile"
+	app.updateTableViewState(false, 0)
+	assert.False(t, app.loadingContainer.Visible())
+	assert.False(t, app.objectTable.Visible())
+	assert.True(t, app.emptyStateCard.Visible())
+	assert.Contains(t, app.emptyStateMsg.Text, "No objects match query 'testfile'")
+	assert.True(t, app.emptyClearFilterBtn.Visible())
+	assert.False(t, app.emptyUploadBtn.Visible())
+
+	app.searchQuery = ""
+	app.updateTableViewState(false, 0)
+	assert.Contains(t, app.emptyStateMsg.Text, "This bucket is empty")
+	assert.False(t, app.emptyClearFilterBtn.Visible())
+	assert.True(t, app.emptyUploadBtn.Visible())
+
 	app.updateTableViewState(false, 5)
 	assert.False(t, app.loadingContainer.Visible())
 	assert.True(t, app.objectTable.Visible())

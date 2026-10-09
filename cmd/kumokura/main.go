@@ -20,6 +20,7 @@ func main() {
 
 	rootCmd := cli.NewRootCmd(app, os.Stdout, os.Stderr)
 	if err := rootCmd.ExecuteContext(ctx); err != nil {
-		os.Exit(1)
+		code := cli.DetermineExitCode(err)
+		os.Exit(code)
 	}
 }

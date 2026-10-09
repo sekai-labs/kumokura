@@ -131,8 +131,24 @@ func TestBufferPoolManager(t *testing.T) {
 
 	tiered := NewTieredBufferPool()
 	b1 := tiered.Get(2048)
-	assert.Equal(t, 2048, len(*b1))
+	assert.Equal(t, Tier5MB, len(*b1))
 	tiered.Put(2048, b1)
+
+	b2 := tiered.Get(6 * 1024 * 1024)
+	assert.Equal(t, Tier8MB, len(*b2))
+	tiered.Put(6*1024*1024, b2)
+
+	b3 := tiered.Get(10 * 1024 * 1024)
+	assert.Equal(t, Tier16MB, len(*b3))
+	tiered.Put(10*1024*1024, b3)
+
+	b4 := tiered.Get(25 * 1024 * 1024)
+	assert.Equal(t, Tier32MB, len(*b4))
+	tiered.Put(25*1024*1024, b4)
+
+	b5 := tiered.Get(50 * 1024 * 1024)
+	assert.Equal(t, Tier64MB, len(*b5))
+	tiered.Put(50*1024*1024, b5)
 }
 
 func TestEventPublisher(t *testing.T) {

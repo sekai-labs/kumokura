@@ -72,9 +72,11 @@ func (s *SyncService) Plan(
 	)
 
 	for _, key := range allKeys {
+		if err := domain.ValidateSyncPath(key); err != nil {
+			continue
+		}
 		src, hasSrc := sourceFiles[key]
 		dst, hasDst := destFiles[key]
-
 		item := domain.SyncItem{
 			RelativePath: key,
 			SourceEntry:  src,

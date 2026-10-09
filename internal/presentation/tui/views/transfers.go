@@ -50,8 +50,19 @@ func (v *TransfersView) Render(width, height int) string {
 			}
 
 			jobID := j.ID
-			if len(jobID) > 26 {
-				jobID = jobID[:25] + "…"
+			if lipgloss.Width(jobID) > 26 {
+				targetW := 25
+				var curW int
+				var runes []rune
+				for _, r := range jobID {
+					rw := lipgloss.Width(string(r))
+					if curW+rw > targetW {
+						break
+					}
+					curW += rw
+					runes = append(runes, r)
+				}
+				jobID = string(runes) + "…"
 			}
 
 			line := fmt.Sprintf("%-28s %-8s %-12s %-10s %s",
