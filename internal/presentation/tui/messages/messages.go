@@ -76,6 +76,14 @@ type FolderUploadFinishedMsg struct {
 	FailedCount int
 	Err         error
 }
+type BatchUploadFinishedMsg struct {
+	Bucket      string
+	Prefix      string
+	TotalCount  int
+	TotalBytes  int64
+	FailedCount int
+	Err         error
+}
 
 type FolderDownloadFinishedMsg struct {
 	Bucket      string

@@ -137,15 +137,15 @@ func TestTUI_UploadModal(t *testing.T) {
 
 	m, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
 	updated := m.(Model)
-	assert.True(t, updated.uploadModal.Active)
-	assert.Contains(t, updated.uploadModal.Destination, "test-bucket")
+	assert.True(t, updated.yaziPicker.Active)
+	assert.Contains(t, updated.yaziPicker.TargetBucket, "test-bucket")
 
 	view := updated.View()
-	assert.Contains(t, view, "UPLOAD (FILE OR FOLDER)")
-	assert.Contains(t, view, "Local path (file or directory):")
+	assert.Contains(t, view, "YAZI FILE/FOLDER SELECTOR")
+	assert.Contains(t, view, "s3://test-bucket/")
 	mEsc, _ := updated.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	closed := mEsc.(Model)
-	assert.False(t, closed.uploadModal.Active)
+	assert.False(t, closed.yaziPicker.Active)
 }
 
 func TestTUI_PreviewSanitization(t *testing.T) {

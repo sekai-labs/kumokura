@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aymanbagabas/go-osc52/v2"
@@ -23,6 +24,7 @@ import (
 	objDomain "github.com/sekai-labs/kumokura/internal/objects/domain"
 	objPorts "github.com/sekai-labs/kumokura/internal/objects/ports"
 	"github.com/sekai-labs/kumokura/internal/presentation/tui/components"
+	"github.com/sekai-labs/kumokura/internal/presentation/tui/components/filepicker"
 	"github.com/sekai-labs/kumokura/internal/presentation/tui/keymap"
 	"github.com/sekai-labs/kumokura/internal/presentation/tui/messages"
 	"github.com/sekai-labs/kumokura/internal/presentation/tui/styles"
@@ -67,15 +69,42 @@ type Model struct {
 	showDeleteModal bool
 	deleteTargetKey string
 	uploadModal     components.UploadModal
+	yaziPicker      filepicker.YaziPicker
 	downloadModal   components.DownloadModal
 	presignModal    components.PresignModal
-
+	activeUploads   int
 	notification string
 	notifTimerID int
 }
 
 type clearNotificationMsg struct {
 	id int
+}
+
+type transferTickMsg time.Time
+
+func transferTickCmd() tea.Cmd {
+	return tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
+		return transferTickMsg(t)
+	})
+}
+
+type progressReader struct {
+	reader      io.Reader
+	total       int64
+	transferred int64
+	onProgress  func(int64)
+}
+
+func (pr *progressReader) Read(p []byte) (int, error) {
+	n, err := pr.reader.Read(p)
+	if n > 0 {
+		pr.transferred += int64(n)
+		if pr.onProgress != nil {
+			pr.onProgress(pr.transferred)
+		}
+	}
+	return n, err
 }
 
 func NewModel(services Services) Model {
@@ -97,6 +126,7 @@ func NewModel(services Services) Model {
 		statusBar:     components.NewStatusBar(st),
 		searchBar:     components.NewSearchBar(st),
 		uploadModal:   components.NewUploadModal(st),
+		yaziPicker:    filepicker.NewYaziPicker(".", "", "", st),
 		downloadModal: components.NewDownloadModal(st),
 		presignModal:  components.NewPresignModal(st),
 		activeTab:     0,
@@ -111,6 +141,7 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		m.loadAccountsCmd(),
 		m.loadBucketsCmd(),
+		transferTickCmd(),
 	)
 }
 
@@ -192,6 +223,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notification = fmt.Sprintf("Uploaded %d objects (%s) to %s", msg.TotalCount, formatBytes(msg.TotalBytes), msg.Prefix)
 			cmds = append(cmds, m.loadObjectsCmd(m.activeBucket, m.explorerView.CurrentPrefix))
 		}
+	case messages.BatchUploadFinishedMsg:
+		m.activeUploads--
+		if m.activeUploads < 0 {
+			m.activeUploads = 0
+		}
+		if msg.Err != nil {
+			m.notification = fmt.Sprintf("Batch upload encountered errors: %v", msg.Err)
+		} else {
+			m.notification = fmt.Sprintf("Finished uploading %d items (%s)", msg.TotalCount, formatBytes(msg.TotalBytes))
+		}
+		cmds = append(cmds, m.loadObjectsCmd(m.activeBucket, m.explorerView.CurrentPrefix))
+		cmds = append(cmds, m.loadTransfersCmd())
+
+	case transferTickMsg:
+		cmds = append(cmds, transferTickCmd())
+		cmds = append(cmds, m.loadTransfersCmd())
 
 	case messages.DownloadFinishedMsg:
 		if msg.Err != nil {
@@ -240,6 +287,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.id == m.notifTimerID {
 			m.notification = ""
 		}
+	case tea.MouseMsg:
+		return m, nil
 	case tea.KeyMsg:
 		if m.showHelpModal {
 			if key.Matches(msg, m.keymap.Escape, m.keymap.Help, m.keymap.Quit) {
@@ -256,6 +305,49 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Batch(cmds...)
 			case "n", "N", "esc":
 				m.showDeleteModal = false
+			}
+			return m, nil
+		}
+
+		if m.yaziPicker.Active {
+			switch msg.String() {
+			case "esc", "q":
+				m.yaziPicker.Active = false
+				m.uploadModal.Active = false
+				return m, nil
+			case "k", "up":
+				m.yaziPicker.MoveUp()
+				return m, nil
+			case "j", "down":
+				m.yaziPicker.MoveDown()
+				return m, nil
+			case "h", "left", "backspace":
+				m.yaziPicker.ParentDirectory()
+				return m, nil
+			case "l", "right":
+				m.yaziPicker.EnterDir()
+				return m, nil
+			case " ":
+				m.yaziPicker.ToggleSelect()
+				return m, nil
+			case "a":
+				m.yaziPicker.SelectAll()
+				return m, nil
+			case "tab":
+				m.yaziPicker.ToggleDirMode()
+				return m, nil
+			case "enter", "u", "y":
+				selectedPaths := m.yaziPicker.GetSelectedPaths()
+				m.yaziPicker.Active = false
+				if len(selectedPaths) == 0 {
+					m.notification = "No files or directories selected"
+					return m, nil
+				}
+				m.activeUploads++
+				m.notification = fmt.Sprintf("Uploading %d item(s) to s3://%s/%s...", len(selectedPaths), m.activeBucket, m.explorerView.CurrentPrefix)
+				cmds = append(cmds, m.uploadBatchCmd(m.activeBucket, m.explorerView.CurrentPrefix, selectedPaths))
+				cmds = append(cmds, m.loadTransfersCmd())
+				return m, tea.Batch(cmds...)
 			}
 			return m, nil
 		}
@@ -311,12 +403,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.downloadModal.Active = false
 				m.downloadModal.Input.Blur()
 
+				target := strings.TrimSpace(m.downloadModal.TargetName)
+				if target == "" {
+					m.notification = "No download target specified"
+					return m, nil
+				}
+
 				if m.downloadModal.IsFolder {
-					m.notification = fmt.Sprintf("Downloading folder %s to %s...", m.downloadModal.TargetName, destDir)
-					cmds = append(cmds, m.downloadFolderCmd(m.activeBucket, m.downloadModal.TargetName, destDir))
+					m.notification = fmt.Sprintf("Downloading folder %s to %s...", target, destDir)
+					cmds = append(cmds, m.downloadFolderCmd(m.activeBucket, target, destDir))
 				} else {
-					m.notification = fmt.Sprintf("Downloading %s to %s...", filepath.Base(m.downloadModal.TargetName), destDir)
-					cmds = append(cmds, m.downloadObjectCmd(m.activeBucket, m.downloadModal.TargetName, destDir))
+					m.notification = fmt.Sprintf("Downloading %s to %s...", filepath.Base(target), destDir)
+					cmds = append(cmds, m.downloadObjectCmd(m.activeBucket, target, destDir))
 				}
 			default:
 				var tiCmd tea.Cmd
@@ -562,11 +660,13 @@ func (m Model) handleExplorerKeys(msg tea.KeyMsg, cmds []tea.Cmd) (Model, []tea.
 		if m.activeBucket == "" {
 			m.notification = "Select a bucket before uploading"
 		} else {
+			cwd, _ := os.Getwd()
+			m.yaziPicker = filepicker.NewYaziPicker(cwd, m.activeBucket, m.explorerView.CurrentPrefix, m.styles)
+			m.yaziPicker.Active = true
 			m.uploadModal.Active = true
 			m.uploadModal.Destination = fmt.Sprintf("s3://%s/%s", m.activeBucket, m.explorerView.CurrentPrefix)
 			m.uploadModal.ErrorText = ""
 			m.uploadModal.Input.SetValue("")
-			m.uploadModal.Input.Focus()
 		}
 
 	case key.Matches(msg, m.keymap.Download):
@@ -574,28 +674,41 @@ func (m Model) handleExplorerKeys(msg tea.KeyMsg, cmds []tea.Cmd) (Model, []tea.
 			m.notification = "Select a bucket before downloading"
 		} else {
 			prefixLen := len(m.explorerView.Prefixes)
-			if m.explorerView.SelectedObject < prefixLen {
-				targetFolder := m.explorerView.Prefixes[m.explorerView.SelectedObject].Prefix
-				m.downloadModal.Active = true
-				m.downloadModal.TargetName = targetFolder
-				m.downloadModal.IsFolder = true
-				m.downloadModal.ErrorText = ""
-				m.downloadModal.Input.SetValue("./")
-				m.downloadModal.Input.Focus()
+			objLen := len(m.explorerView.Objects)
+			totalLen := prefixLen + objLen
+			if totalLen == 0 {
+				m.notification = "No object or folder selected"
 			} else {
-				objIdx := m.explorerView.SelectedObject - prefixLen
-				if objIdx < len(m.explorerView.Objects) {
-					targetKey := m.explorerView.Objects[objIdx].Key
+				if m.explorerView.SelectedObject < 0 {
+					m.explorerView.SelectedObject = 0
+				}
+				if m.explorerView.SelectedObject >= totalLen {
+					m.explorerView.SelectedObject = totalLen - 1
+				}
+				if m.explorerView.SelectedObject < prefixLen {
+					targetFolder := m.explorerView.Prefixes[m.explorerView.SelectedObject].Prefix
 					m.downloadModal.Active = true
-					m.downloadModal.TargetName = targetKey
-					m.downloadModal.IsFolder = false
+					m.downloadModal.TargetName = targetFolder
+					m.downloadModal.IsFolder = true
 					m.downloadModal.ErrorText = ""
 					m.downloadModal.Input.SetValue("./")
 					m.downloadModal.Input.Focus()
+				} else {
+					objIdx := m.explorerView.SelectedObject - prefixLen
+					if objIdx >= 0 && objIdx < objLen {
+						targetKey := m.explorerView.Objects[objIdx].Key
+						m.downloadModal.Active = true
+						m.downloadModal.TargetName = targetKey
+						m.downloadModal.IsFolder = false
+						m.downloadModal.ErrorText = ""
+						m.downloadModal.Input.SetValue("./")
+						m.downloadModal.Input.Focus()
+					} else {
+						m.notification = "No object or folder selected"
+					}
 				}
 			}
 		}
-
 	case key.Matches(msg, m.keymap.Presign):
 		if m.activeBucket == "" {
 			m.notification = "Select a bucket before generating presigned URL"
@@ -659,6 +772,10 @@ func (m Model) View() string {
 	parts = append(parts, body, bottomBar)
 
 	mainView := lipgloss.JoinVertical(lipgloss.Left, parts...)
+
+	if m.yaziPicker.Active {
+		return m.yaziPicker.Render(m.width, m.height)
+	}
 
 	if m.uploadModal.Active {
 		return m.uploadModal.Render(m.width, m.height)
@@ -857,7 +974,17 @@ func (m Model) uploadObjectCmd(bucket, key, localPath string) tea.Cmd {
 			ContentLength: stat.Size(),
 		}
 
-		_, err = m.services.ObjectService.PutObject(context.Background(), bucket, fullKey, f, stat.Size(), meta)
+		pr := &progressReader{
+			reader: f,
+			total:  stat.Size(),
+			onProgress: func(transferred int64) {
+				if m.services.TransferService != nil {
+					_ = m.services.TransferService.UpdateJobProgress(context.Background(), jobID, transferred)
+				}
+			},
+		}
+
+		_, err = m.services.ObjectService.PutObject(context.Background(), bucket, fullKey, pr, stat.Size(), meta)
 		if m.services.TransferService != nil {
 			if err != nil {
 				_ = m.services.TransferService.UpdateJobStatus(context.Background(), jobID, transferDomain.JobStatusFailed, err.Error())
@@ -978,111 +1105,160 @@ func (m Model) uploadFolderCmd(bucket, prefix, localDirPath string) tea.Cmd {
 			}
 		}
 
-		var totalCount int
-		var totalBytes int64
-		var failedCount int
+		type uploadTask struct {
+			isDir    bool
+			localPath string
+			s3Key    string
+			size     int64
+		}
 
-		err := filepath.Walk(cleanDir, func(path string, info os.FileInfo, walkErr error) error {
-			if walkErr != nil {
-				failedCount++
+		var tasks []uploadTask
+		var walkErr error
+
+		walkErr = filepath.Walk(cleanDir, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
 				return nil
 			}
-
-			relPath, relErr := filepath.Rel(cleanDir, path)
-			if relErr != nil {
-				failedCount++
-				return nil
-			}
-			if relPath == "." {
+			relPath, err := filepath.Rel(cleanDir, path)
+			if err != nil || relPath == "." {
 				return nil
 			}
 
 			if info.IsDir() {
-
 				dirMarkerKey := folderS3Prefix + filepath.ToSlash(relPath) + "/"
-				dirMarkerMeta := objDomain.ObjectMetadata{
-					ContentType:   "application/x-directory",
-					ContentLength: 0,
-				}
-				jobIDDir := fmt.Sprintf("up-%d", time.Now().UnixNano())
-				if m.services.TransferService != nil {
-					job := transferDomain.TransferJob{
-						ID:               jobIDDir,
-						AccountID:        accountID,
-						Type:             transferDomain.TransferTypeUpload,
-						SourcePath:       path,
-						DestinationPath:  fmt.Sprintf("s3://%s/%s", bucket, dirMarkerKey),
-						Bucket:           bucket,
-						Key:              dirMarkerKey,
-						TotalBytes:       0,
-						BytesTransferred: 0,
-						Status:           transferDomain.JobStatusRunning,
-					}
-					_, _ = m.services.TransferService.SubmitJob(context.Background(), job)
-				}
-				_, pErr := m.services.ObjectService.PutObject(context.Background(), bucket, dirMarkerKey, bytes.NewReader([]byte{}), 0, dirMarkerMeta)
-				if m.services.TransferService != nil {
-					if pErr != nil {
-						_ = m.services.TransferService.UpdateJobStatus(context.Background(), jobIDDir, transferDomain.JobStatusFailed, pErr.Error())
-					} else {
-						_ = m.services.TransferService.UpdateJobProgress(context.Background(), jobIDDir, 0)
-						_ = m.services.TransferService.UpdateJobStatus(context.Background(), jobIDDir, transferDomain.JobStatusCompleted, "")
-					}
-				}
-				return nil
+				tasks = append(tasks, uploadTask{
+					isDir:     true,
+					localPath: path,
+					s3Key:     dirMarkerKey,
+					size:      0,
+				})
+			} else {
+				targetKey := folderS3Prefix + filepath.ToSlash(relPath)
+				tasks = append(tasks, uploadTask{
+					isDir:     false,
+					localPath: path,
+					s3Key:     targetKey,
+					size:      info.Size(),
+				})
 			}
-
-			targetKey := folderS3Prefix + filepath.ToSlash(relPath)
-
-			f, openErr := os.Open(path)
-			if openErr != nil {
-				failedCount++
-				return nil
-			}
-			defer f.Close()
-
-			fileSize := info.Size()
-			meta := objDomain.ObjectMetadata{
-				ContentType:   "application/octet-stream",
-				ContentLength: fileSize,
-			}
-
-			jobIDFile := fmt.Sprintf("up-%d", time.Now().UnixNano())
-			if m.services.TransferService != nil {
-				job := transferDomain.TransferJob{
-					ID:               jobIDFile,
-					AccountID:        accountID,
-					Type:             transferDomain.TransferTypeUpload,
-					SourcePath:       path,
-					DestinationPath:  fmt.Sprintf("s3://%s/%s", bucket, targetKey),
-					Bucket:           bucket,
-					Key:              targetKey,
-					TotalBytes:       fileSize,
-					BytesTransferred: 0,
-					Status:           transferDomain.JobStatusRunning,
-				}
-				_, _ = m.services.TransferService.SubmitJob(context.Background(), job)
-			}
-
-			_, putErr := m.services.ObjectService.PutObject(context.Background(), bucket, targetKey, f, fileSize, meta)
-			if m.services.TransferService != nil {
-				if putErr != nil {
-					_ = m.services.TransferService.UpdateJobStatus(context.Background(), jobIDFile, transferDomain.JobStatusFailed, putErr.Error())
-				} else {
-					_ = m.services.TransferService.UpdateJobProgress(context.Background(), jobIDFile, fileSize)
-					_ = m.services.TransferService.UpdateJobStatus(context.Background(), jobIDFile, transferDomain.JobStatusCompleted, "")
-				}
-			}
-
-			if putErr != nil {
-				failedCount++
-				return nil
-			}
-
-			totalCount++
-			totalBytes += fileSize
 			return nil
 		})
+
+		concurrency := 16
+		taskCh := make(chan uploadTask, len(tasks))
+		for _, t := range tasks {
+			taskCh <- t
+		}
+		close(taskCh)
+
+		var totalCount int
+		var totalBytes int64
+		var failedCount int
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+
+		for range concurrency {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for t := range taskCh {
+					if t.isDir {
+						dirMeta := objDomain.ObjectMetadata{
+							ContentType:   "application/x-directory",
+							ContentLength: 0,
+						}
+						jobID := fmt.Sprintf("up-%d", time.Now().UnixNano())
+						if m.services.TransferService != nil {
+							j := transferDomain.TransferJob{
+								ID:               jobID,
+								AccountID:        accountID,
+								Type:             transferDomain.TransferTypeUpload,
+								SourcePath:       t.localPath,
+								DestinationPath:  fmt.Sprintf("s3://%s/%s", bucket, t.s3Key),
+								Bucket:           bucket,
+								Key:              t.s3Key,
+								Status:           transferDomain.JobStatusRunning,
+							}
+							_, _ = m.services.TransferService.SubmitJob(context.Background(), j)
+						}
+						_, pErr := m.services.ObjectService.PutObject(context.Background(), bucket, t.s3Key, bytes.NewReader([]byte{}), 0, dirMeta)
+						if m.services.TransferService != nil {
+							if pErr != nil {
+								_ = m.services.TransferService.UpdateJobStatus(context.Background(), jobID, transferDomain.JobStatusFailed, pErr.Error())
+							} else {
+								_ = m.services.TransferService.UpdateJobProgress(context.Background(), jobID, 0)
+								_ = m.services.TransferService.UpdateJobStatus(context.Background(), jobID, transferDomain.JobStatusCompleted, "")
+							}
+						}
+						mu.Lock()
+						if pErr != nil {
+							failedCount++
+						}
+						mu.Unlock()
+					} else {
+						f, openErr := os.Open(t.localPath)
+						if openErr != nil {
+							mu.Lock()
+							failedCount++
+							mu.Unlock()
+							continue
+						}
+
+						meta := objDomain.ObjectMetadata{
+							ContentType:   "application/octet-stream",
+							ContentLength: t.size,
+						}
+						jobID := fmt.Sprintf("up-%d", time.Now().UnixNano())
+						if m.services.TransferService != nil {
+							j := transferDomain.TransferJob{
+								ID:               jobID,
+								AccountID:        accountID,
+								Type:             transferDomain.TransferTypeUpload,
+								SourcePath:       t.localPath,
+								DestinationPath:  fmt.Sprintf("s3://%s/%s", bucket, t.s3Key),
+								Bucket:           bucket,
+								Key:              t.s3Key,
+								TotalBytes:       t.size,
+								Status:           transferDomain.JobStatusRunning,
+							}
+							_, _ = m.services.TransferService.SubmitJob(context.Background(), j)
+						}
+
+						pr := &progressReader{
+							reader: f,
+							total:  t.size,
+							onProgress: func(transferred int64) {
+								if m.services.TransferService != nil {
+									_ = m.services.TransferService.UpdateJobProgress(context.Background(), jobID, transferred)
+								}
+							},
+						}
+
+						_, putErr := m.services.ObjectService.PutObject(context.Background(), bucket, t.s3Key, pr, t.size, meta)
+						f.Close()
+
+						if m.services.TransferService != nil {
+							if putErr != nil {
+								_ = m.services.TransferService.UpdateJobStatus(context.Background(), jobID, transferDomain.JobStatusFailed, putErr.Error())
+							} else {
+								_ = m.services.TransferService.UpdateJobProgress(context.Background(), jobID, t.size)
+								_ = m.services.TransferService.UpdateJobStatus(context.Background(), jobID, transferDomain.JobStatusCompleted, "")
+							}
+						}
+
+						mu.Lock()
+						if putErr != nil {
+							failedCount++
+						} else {
+							totalCount++
+							totalBytes += t.size
+						}
+						mu.Unlock()
+					}
+				}
+			}()
+		}
+		wg.Wait()
 
 		return messages.FolderUploadFinishedMsg{
 			Bucket:      bucket,
@@ -1090,7 +1266,60 @@ func (m Model) uploadFolderCmd(bucket, prefix, localDirPath string) tea.Cmd {
 			TotalCount:  totalCount,
 			TotalBytes:  totalBytes,
 			FailedCount: failedCount,
-			Err:         err,
+			Err:         walkErr,
+		}
+	}
+}
+
+func (m Model) uploadBatchCmd(bucket, prefix string, paths []string) tea.Cmd {
+	return func() tea.Msg {
+		var totalCount int
+		var totalBytes int64
+		var failedCount int
+
+		for _, p := range paths {
+			fi, err := os.Stat(p)
+			if err != nil {
+				failedCount++
+				continue
+			}
+			if fi.IsDir() {
+				folderMsg := m.uploadFolderCmd(bucket, prefix, p)()
+				if fm, ok := folderMsg.(messages.FolderUploadFinishedMsg); ok {
+					totalCount += fm.TotalCount
+					totalBytes += fm.TotalBytes
+					failedCount += fm.FailedCount
+				}
+			} else {
+				fileName := filepath.Base(p)
+				targetKey := fileName
+				if prefix != "" {
+					targetKey = filepath.ToSlash(filepath.Join(prefix, fileName))
+				}
+				objMsg := m.uploadObjectCmd(bucket, targetKey, p)()
+				if om, ok := objMsg.(messages.UploadFinishedMsg); ok {
+					if om.Err != nil {
+						failedCount++
+					} else {
+						totalCount++
+						totalBytes += fi.Size()
+					}
+				}
+			}
+		}
+
+		var finalErr error
+		if failedCount > 0 && totalCount == 0 {
+			finalErr = fmt.Errorf("%d item(s) failed to upload", failedCount)
+		}
+
+		return messages.BatchUploadFinishedMsg{
+			Bucket:      bucket,
+			Prefix:      prefix,
+			TotalCount:  totalCount,
+			TotalBytes:  totalBytes,
+			FailedCount: failedCount,
+			Err:         finalErr,
 		}
 	}
 }
@@ -1103,6 +1332,19 @@ func (m Model) downloadObjectCmd(bucket, key, localDestDir string) tea.Cmd {
 				Key:    key,
 				Err:    fmt.Errorf("object service unavailable"),
 			}
+		}
+
+		key = strings.TrimSpace(key)
+		if key == "" {
+			return messages.DownloadFinishedMsg{
+				Bucket: bucket,
+				Key:    key,
+				Err:    fmt.Errorf("empty object key"),
+			}
+		}
+
+		if strings.TrimSpace(localDestDir) == "" {
+			localDestDir = "."
 		}
 
 		if err := os.MkdirAll(localDestDir, 0755); err != nil {
@@ -1124,6 +1366,13 @@ func (m Model) downloadObjectCmd(bucket, key, localDestDir string) tea.Cmd {
 				Err:    err,
 			}
 		}
+		if content.Body == nil {
+			return messages.DownloadFinishedMsg{
+				Bucket: bucket,
+				Key:    key,
+				Err:    fmt.Errorf("empty response body from storage"),
+			}
+		}
 		defer content.Body.Close()
 
 		outFile, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
@@ -1135,7 +1384,6 @@ func (m Model) downloadObjectCmd(bucket, key, localDestDir string) tea.Cmd {
 			}
 		}
 		defer outFile.Close()
-
 		n, err := io.Copy(outFile, content.Body)
 		if err != nil {
 			return messages.DownloadFinishedMsg{
@@ -1222,9 +1470,12 @@ func (m Model) downloadFolderCmd(bucket, prefix, localDestDir string) tea.Cmd {
 					failedCount++
 					continue
 				}
-
 				content, err := m.services.ObjectService.GetObject(context.Background(), bucket, obj.Key, "")
 				if err != nil {
+					failedCount++
+					continue
+				}
+				if content.Body == nil {
 					failedCount++
 					continue
 				}

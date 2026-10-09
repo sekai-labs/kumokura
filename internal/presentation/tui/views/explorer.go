@@ -221,17 +221,59 @@ func (v ExplorerView) renderCenterPanel(width, height int) string {
 		objectOffset = 0
 	}
 
-	var rows []string
-	keyColW := width - 42
+	availColW := width - 4
+	if availColW < 20 {
+		availColW = 20
+	}
+
+	showDetails := availColW >= 65
+	showStorageClass := availColW >= 80
+
+	sizeColW := 10
+	scColW := 15
+	dateColW := 12
+	fixedW := sizeColW + 2
+	if showStorageClass {
+		fixedW += scColW + 1
+	}
+	if showDetails {
+		fixedW += dateColW + 1
+	}
+
+	keyColW := availColW - fixedW - 4
 	if keyColW < 12 {
 		keyColW = 12
 	}
-	tblHeader := fmt.Sprintf("   %-*s %10s %15s %12s", keyColW, "Name", "Size", "Storage Class", "Last Modified")
+
+	var tblHeader string
+	if showStorageClass {
+		tblHeader = fmt.Sprintf("   %s %s %s %s",
+			padVisual("Name", keyColW, false),
+			padVisual("Size", sizeColW, true),
+			padVisual("Storage Class", scColW, true),
+			padVisual("Last Modified", dateColW, true),
+		)
+	} else if showDetails {
+		tblHeader = fmt.Sprintf("   %s %s %s",
+			padVisual("Name", keyColW, false),
+			padVisual("Size", sizeColW, true),
+			padVisual("Last Modified", dateColW, true),
+		)
+	} else {
+		tblHeader = fmt.Sprintf("   %s %s",
+			padVisual("Name", keyColW, false),
+			padVisual("Size", sizeColW, true),
+		)
+	}
+
 	hdrStyle := lipgloss.NewStyle().
 		Bold(true).
 		Foreground(v.styles.Theme.TextSubtle).
 		Border(lipgloss.NormalBorder(), false, false, true, false).
-		BorderForeground(v.styles.Theme.BorderInactive)
+		BorderForeground(v.styles.Theme.BorderInactive).
+		MaxWidth(width - 2).
+		MaxHeight(1)
+	var rows []string
 	rows = append(rows, hdrStyle.Width(width-2).Render(tblHeader))
 
 	if totalItems == 0 {
@@ -258,7 +300,27 @@ func (v ExplorerView) renderCenterPanel(width, height int) string {
 					maxNameW = 8
 				}
 				name = truncateString(name, maxNameW)
-				display = fmt.Sprintf("📁 %-*s %10s %15s %12s", maxNameW, name, "[DIR]", "-", "-")
+				iconAndName := fmt.Sprintf("📁 %s", padVisual(name, maxNameW, false))
+
+				if showStorageClass {
+					display = fmt.Sprintf("%s %s %s %s",
+						iconAndName,
+						padVisual("[DIR]", sizeColW, true),
+						padVisual("-", scColW, true),
+						padVisual("-", dateColW, true),
+					)
+				} else if showDetails {
+					display = fmt.Sprintf("%s %s %s",
+						iconAndName,
+						padVisual("[DIR]", sizeColW, true),
+						padVisual("-", dateColW, true),
+					)
+				} else {
+					display = fmt.Sprintf("%s %s",
+						iconAndName,
+						padVisual("[DIR]", sizeColW, true),
+					)
+				}
 			} else {
 				objIdx := i - prefixLen
 				obj := visibleObjects[objIdx]
@@ -281,19 +343,50 @@ func (v ExplorerView) renderCenterPanel(width, height int) string {
 					nameWidth = 8
 				}
 				name = truncateString(name, nameWidth)
+				iconAndName := fmt.Sprintf("📄 %s", padVisual(name, nameWidth, false))
 
-				display = fmt.Sprintf("📄 %-*s %10s %15s %12s", nameWidth, name, sizeStr, storageClass, lastModStr)
+				if showStorageClass {
+					display = fmt.Sprintf("%s %s %s %s",
+						iconAndName,
+						padVisual(sizeStr, sizeColW, true),
+						padVisual(storageClass, scColW, true),
+						padVisual(lastModStr, dateColW, true),
+					)
+				} else if showDetails {
+					display = fmt.Sprintf("%s %s %s",
+						iconAndName,
+						padVisual(sizeStr, sizeColW, true),
+						padVisual(lastModStr, dateColW, true),
+					)
+				} else {
+					display = fmt.Sprintf("%s %s",
+						iconAndName,
+						padVisual(sizeStr, sizeColW, true),
+					)
+				}
 			}
 
 			var rowStr string
+			rowStyle := v.styles.NormalRow
+			prefixBadge := "   "
 			if i == selectedObject && isActive {
-				rowStr = v.styles.SelectedRow.Width(width - 2).Render(fmt.Sprintf(" ▶ %s", display))
+				rowStyle = v.styles.SelectedRow
+				prefixBadge = " ▶ "
 			} else if i == selectedObject {
-				rowStr = v.styles.SelectedRow.Width(width - 2).Render(fmt.Sprintf(" ▷ %s", display))
-			} else {
-				rowStr = v.styles.NormalRow.Width(width - 2).Render(fmt.Sprintf("   %s", display))
+				rowStyle = v.styles.SelectedRow
+				prefixBadge = " ▷ "
 			}
+			rowStr = rowStyle.Width(width - 2).MaxHeight(1).Render(prefixBadge + display)
 			rows = append(rows, rowStr)
+		}
+
+		if totalItems > maxItems {
+			scrollIndicator := fmt.Sprintf("[%d-%d/%d]", objectOffset+1, endIdx, totalItems)
+			indStyle := lipgloss.NewStyle().
+				Foreground(v.styles.Theme.TextMuted).
+				Align(lipgloss.Right).
+				Width(width - 4)
+			rows = append(rows, indStyle.Render(scrollIndicator))
 		}
 	}
 
@@ -303,6 +396,18 @@ func (v ExplorerView) renderCenterPanel(width, height int) string {
 		style = v.styles.ActivePanel
 	}
 	return style.Width(width).Height(height).Render(content)
+}
+
+func padVisual(s string, targetWidth int, alignRight bool) string {
+	w := lipgloss.Width(s)
+	if w >= targetWidth {
+		return truncateString(s, targetWidth)
+	}
+	padding := strings.Repeat(" ", targetWidth-w)
+	if alignRight {
+		return padding + s
+	}
+	return s + padding
 }
 
 func (v ExplorerView) renderRightPanel(width, height int) string {

@@ -10,6 +10,7 @@ node_modules/
 # Specifications (Maintained separately on GitHub Wiki)
 specs/
 wiki/
+AGENTS.md
 
 # OS and IDE files
 .DS_Store

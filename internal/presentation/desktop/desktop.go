@@ -113,6 +113,9 @@ func NewDesktopApp(appContainer *bootstrap.AppContainer) *DesktopApp {
 }
 
 func NewDesktopAppWithFyneApp(appContainer *bootstrap.AppContainer, a fyne.App) *DesktopApp {
+	if a != nil && a.Settings() != nil {
+		a.Settings().SetTheme(NewBlackTheme())
+	}
 	w := a.NewWindow("Kumokura - Native Object Storage Explorer")
 	w.Resize(fyne.NewSize(1280, 800))
 

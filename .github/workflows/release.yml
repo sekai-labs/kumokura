@@ -91,9 +91,16 @@ jobs:
         run: |
           TAG_NAME="${GITHUB_REF_NAME}"
           ARCHIVE_NAME="kumokura_${TAG_NAME}_${{ matrix.goos }}_${{ matrix.goarch }}.zip"
+          mkdir -p release-artifacts
           cd dist
           7z a "../release-artifacts/${ARCHIVE_NAME}" kumokura.exe kumokura-tui.exe kumokura-desktop.exe
 
+      - name: Build Windows MSI installer
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        run: |
+          $Tag = "${{ github.ref_name }}"
+          ./packaging/windows/build-msi.ps1 -Version "$Tag" -DistDir "dist" -OutputDir "release-artifacts"
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
