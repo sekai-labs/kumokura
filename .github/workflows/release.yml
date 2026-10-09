@@ -207,9 +207,41 @@ jobs:
         run: |
           sha256sum * > checksums.txt
 
+      - name: Prepare Release Notes Content
+        id: release_notes
+        run: |
+          cat << 'EOF' > release_body.md
+          ## Kumokura (雲蔵) Cross-Cloud S3 Storage Manager
+
+          ### Highlights
+          - **Native Desktop GUI**: Modern high-contrast dark theme, instant S3 explorer, inline image rendering preview, and video external player integration.
+          - **Dual-Pane TUI**: High-density terminal explorer with responsive scrolling, space-based multi-selection bulk operations, and Yazi-style 3-column Miller Columns file picker (`u`).
+          - **High-Performance Transfers**: Tiered buffer pooling, multi-worker concurrent multipart upload pipeline, and 500ms real-time progress telemetry.
+          - **Universal S3 Compatibility**: AWS S3, MinIO, Cloudflare R2, Wasabi, Backblaze B2, Ceph, and custom endpoints.
+
+          ### Installation
+          #### Windows (MSI Installer & PowerShell)
+          - Download the `.msi` installer below or run in PowerShell:
+          ```powershell
+          irm https://raw.githubusercontent.com/sekai-labs/kumokura/main/packaging/windows/install.ps1 | iex
+          ```
+
+          #### Arch Linux
+          ```bash
+          pacman -U kumokura-*.pkg.tar.zst
+          ```
+
+          #### Unix (Linux / macOS)
+          Extract the `.tar.gz` archive for your platform and place `kumokura`, `kumokura-tui`, and `kumokura-desktop` in your PATH (`/usr/local/bin`).
+
+          ---
+          EOF
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          body_path: release_body.md
+          generate_release_notes: true
           files: |
             release-artifacts/*
           token: ${{ secrets.GITHUB_TOKEN }}
