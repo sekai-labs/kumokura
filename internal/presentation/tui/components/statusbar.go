@@ -17,11 +17,10 @@ func NewStatusBar(s styles.Styles) StatusBar {
 }
 
 func (b *StatusBar) Render(width int, activeHelp []string, throughput float64, progressPercent float64, notification string) string {
-	var leftParts []string
-
+	var left string
 	if notification != "" {
 		notifText := notification
-		maxNotifLen := width * 40 / 100
+		maxNotifLen := width * 50 / 100
 		if maxNotifLen > 10 && lipgloss.Width(notifText) > maxNotifLen {
 			targetW := maxNotifLen - 1
 			var curW int
@@ -36,18 +35,24 @@ func (b *StatusBar) Render(width int, activeHelp []string, throughput float64, p
 			}
 			notifText = string(runes) + "…"
 		}
-		leftParts = append(leftParts, b.styles.WarningPill.Render(notifText))
+		isErr := strings.Contains(strings.ToLower(notification), "err") || strings.Contains(strings.ToLower(notification), "fail")
+		pillStyle := b.styles.SuccessPill
+		prefix := "✔ "
+		if isErr {
+			pillStyle = b.styles.DangerPill
+			prefix = "✖ "
+		}
+		left = pillStyle.Render(prefix + notifText)
 	} else if throughput > 0 {
-		speedStr := fmt.Sprintf("%.2f MiB/s (%.0f%%)", throughput/(1024*1024), progressPercent)
-		leftParts = append(leftParts, b.styles.SuccessPill.Render(speedStr))
+		speedStr := fmt.Sprintf("⚡ %.2f MiB/s (%.0f%%)", throughput/(1024*1024), progressPercent)
+		left = b.styles.SuccessPill.Render(speedStr)
 	} else {
-		leftParts = append(leftParts, b.styles.StatusDesc.Render("Ready"))
+		left = lipgloss.NewStyle().Foreground(b.styles.Theme.TextSubtle).Render("⚡ Ready")
 	}
 
-	left := strings.Join(leftParts, " ")
 	leftWidth := lipgloss.Width(left)
 
-	availForHelp := width - leftWidth - 6
+	availForHelp := width - leftWidth - 2
 	if availForHelp < 0 {
 		availForHelp = 0
 	}
@@ -55,8 +60,8 @@ func (b *StatusBar) Render(width int, activeHelp []string, throughput float64, p
 	var rightParts []string
 	curHelpLen := 0
 	for _, h := range activeHelp {
-		hLen := lipgloss.Width(h) + 2
-		if curHelpLen+hLen > availForHelp {
+		hLen := lipgloss.Width(h) + 1
+		if curHelpLen+hLen > availForHelp && len(rightParts) > 0 {
 			break
 		}
 		rightParts = append(rightParts, b.styles.StatusKey.Render(h))

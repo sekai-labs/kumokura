@@ -71,15 +71,20 @@ type Model struct {
 	presignModal    components.PresignModal
 
 	notification string
+	notifTimerID int
+}
+
+type clearNotificationMsg struct {
+	id int
 }
 
 func NewModel(services Services) Model {
 	st := styles.NewStyles(styles.DarkTheme)
 	tabs := []components.TabItem{
-		{ID: "buckets", Title: "[1 Buckets]"},
-		{ID: "objects", Title: "[2 Objects]"},
-		{ID: "transfers", Title: "[3 Transfers]"},
-		{ID: "sync", Title: "[4 Sync]"},
+		{ID: "buckets", Title: "1 Buckets"},
+		{ID: "objects", Title: "2 Objects"},
+		{ID: "transfers", Title: "3 Transfers"},
+		{ID: "sync", Title: "4 Sync"},
 	}
 
 	return Model{
@@ -225,6 +230,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case messages.StatusNotificationMsg:
 		m.notification = msg.Message
+		m.notifTimerID++
+		currentID := m.notifTimerID
+		cmds = append(cmds, tea.Tick(4*time.Second, func(time.Time) tea.Msg {
+			return clearNotificationMsg{id: currentID}
+		}))
+
+	case clearNotificationMsg:
+		if msg.id == m.notifTimerID {
+			m.notification = ""
+		}
 	case tea.KeyMsg:
 		if m.showHelpModal {
 			if key.Matches(msg, m.keymap.Escape, m.keymap.Help, m.keymap.Quit) {
@@ -472,7 +487,7 @@ func (m Model) handleExplorerKeys(msg tea.KeyMsg, cmds []tea.Cmd) (Model, []tea.
 			cmds = append(cmds, m.inspectCurrentObjectCmd())
 		}
 
-	case key.Matches(msg, m.keymap.Enter):
+	case key.Matches(msg, m.keymap.Enter), key.Matches(msg, m.keymap.Right):
 		if m.explorerView.ActivePaneIndex == 0 {
 			if len(m.explorerView.Buckets) > m.explorerView.SelectedBucket {
 				m.activeBucket = m.explorerView.Buckets[m.explorerView.SelectedBucket].Name
@@ -508,12 +523,15 @@ func (m Model) handleExplorerKeys(msg tea.KeyMsg, cmds []tea.Cmd) (Model, []tea.
 						m.explorerView.PreviewContent = nil
 						m.explorerView.PreviewTags = nil
 						cmds = append(cmds, m.loadObjectsCmd(m.activeBucket, obj.Key))
+					} else {
+						m.explorerView.ShowPreview = true
+						cmds = append(cmds, m.inspectCurrentObjectCmd())
 					}
 				}
 			}
 		}
 
-	case key.Matches(msg, m.keymap.Back):
+	case key.Matches(msg, m.keymap.Back), key.Matches(msg, m.keymap.Left):
 		if m.explorerView.CurrentPrefix != "" {
 			trimmed := strings.TrimSuffix(m.explorerView.CurrentPrefix, "/")
 			lastSlash := strings.LastIndex(trimmed, "/")
@@ -528,6 +546,8 @@ func (m Model) handleExplorerKeys(msg tea.KeyMsg, cmds []tea.Cmd) (Model, []tea.
 			m.explorerView.PreviewContent = nil
 			m.explorerView.PreviewTags = nil
 			cmds = append(cmds, m.loadObjectsCmd(m.activeBucket, m.explorerView.CurrentPrefix))
+		} else if m.explorerView.ActivePaneIndex == 1 {
+			m.explorerView.ActivePaneIndex = 0
 		}
 	case key.Matches(msg, m.keymap.Delete):
 		prefixLen := len(m.explorerView.Prefixes)
@@ -538,7 +558,6 @@ func (m Model) handleExplorerKeys(msg tea.KeyMsg, cmds []tea.Cmd) (Model, []tea.
 				m.showDeleteModal = true
 			}
 		}
-
 	case key.Matches(msg, m.keymap.Upload):
 		if m.activeBucket == "" {
 			m.notification = "Select a bucket before uploading"
@@ -625,7 +644,12 @@ func (m Model) View() string {
 		filterBar = m.searchBar.Render(m.width)
 	}
 
-	helpKeys := []string{"[Tab] Switch Pane", "[j/k] Navigate", "[/] Filter", "[u] Upload", "[d] Download", "[?] Help"}
+	var helpKeys []string
+	if m.width >= 120 {
+		helpKeys = []string{"[Tab] Switch Pane", "[j/k] Navigate", "[/] Filter", "[u] Upload", "[d] Download", "[p] Presigned", "[i] Inspect", "[?] Help"}
+	} else {
+		helpKeys = []string{"[Tab] Switch Pane", "[j/k] Navigate", "[/] Filter", "[u] Upload", "[d] Download", "[?] Help"}
+	}
 	bottomBar := m.statusBar.Render(m.width, helpKeys, 0, 0, m.notification)
 
 	parts := []string{topBar}

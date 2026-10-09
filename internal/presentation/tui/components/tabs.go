@@ -28,8 +28,13 @@ func NewTabBar(tabs []TabItem, s styles.Styles) TabBar {
 }
 
 func (t *TabBar) Render(width int, activeAccount string, activeRegion string, activeBucket string) string {
-	var tabsRendered []string
+	titleBadge := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(t.styles.Theme.BorderActive).
+		Padding(0, 1).
+		Render("☁  KUMOKURA")
 
+	var tabsRendered []string
 	for i, tab := range t.Tabs {
 		title := tab.Title
 		if width < 90 {
@@ -38,26 +43,42 @@ func (t *TabBar) Render(width int, activeAccount string, activeRegion string, ac
 			title = strings.Replace(title, " Transfers", " Xfer", 1)
 			title = strings.Replace(title, " Sync", " Sync", 1)
 		}
+		pillText := title
+		if !strings.HasPrefix(pillText, "[") {
+			pillText = "[" + pillText + "]"
+		}
+		pillText = fmt.Sprintf(" %s ", pillText)
 		if i == t.Active {
-			tabsRendered = append(tabsRendered, t.styles.ActiveTab.Render(title))
+			tabsRendered = append(tabsRendered, t.styles.ActiveTab.Render(pillText))
 		} else {
-			tabsRendered = append(tabsRendered, t.styles.InactiveTab.Render(title))
+			tabsRendered = append(tabsRendered, t.styles.InactiveTab.Render(pillText))
 		}
 	}
 
-	left := lipgloss.JoinHorizontal(lipgloss.Top, tabsRendered...)
+	tabsBar := lipgloss.JoinHorizontal(lipgloss.Top, strings.Join(tabsRendered, " "))
+	left := lipgloss.JoinHorizontal(lipgloss.Center, titleBadge, " ", tabsBar)
 
 	var rightParts []string
-	if width >= 90 && activeAccount != "" {
-		profileLabel := fmt.Sprintf("Profile: %s", activeAccount)
-		if activeRegion != "" {
-			profileLabel = fmt.Sprintf("Profile: %s (%s)", activeAccount, activeRegion)
-		}
-		rightParts = append(rightParts, t.styles.BadgeAccount.Render(profileLabel))
+	if width >= 80 && activeAccount != "" {
+		profileBadge := lipgloss.NewStyle().
+			Background(t.styles.Theme.HighlightRow).
+			Foreground(t.styles.Theme.AccentSky).
+			Bold(true).
+			Padding(0, 1).
+			Render("👤 " + activeAccount)
+		rightParts = append(rightParts, profileBadge)
 	}
-	if width >= 110 && activeBucket != "" {
+	if width >= 95 && activeRegion != "" {
+		regionBadge := lipgloss.NewStyle().
+			Background(t.styles.Theme.HighlightRow).
+			Foreground(t.styles.Theme.BadgeWarning).
+			Padding(0, 1).
+			Render("🌐 " + activeRegion)
+		rightParts = append(rightParts, regionBadge)
+	}
+	if width >= 115 && activeBucket != "" {
 		bucketLabel := activeBucket
-		if lipgloss.Width(bucketLabel) > 20 && width < 130 {
+		if lipgloss.Width(bucketLabel) > 20 && width < 135 {
 			targetW := 19
 			var curW int
 			var runes []rune
@@ -71,10 +92,15 @@ func (t *TabBar) Render(width int, activeAccount string, activeRegion string, ac
 			}
 			bucketLabel = string(runes) + "…"
 		}
-		rightParts = append(rightParts, t.styles.BadgeAccount.Render(fmt.Sprintf("Bucket: %s", bucketLabel)))
+		bucketBadge := lipgloss.NewStyle().
+			Background(t.styles.Theme.HighlightRow).
+			Foreground(t.styles.Theme.BadgeSuccess).
+			Padding(0, 1).
+			Render("🪣 " + bucketLabel)
+		rightParts = append(rightParts, bucketBadge)
 	}
 
-	right := lipgloss.JoinHorizontal(lipgloss.Top, rightParts...)
+	right := strings.Join(rightParts, " ")
 
 	leftWidth := lipgloss.Width(left)
 	rightWidth := lipgloss.Width(right)

@@ -27,38 +27,48 @@ func NewModalDialog(title, message string, options []string, s styles.Styles) Mo
 }
 
 func (m *ModalDialog) Render(totalWidth, totalHeight int) string {
-	dialogWidth := 50
+	dialogWidth := 54
 	if totalWidth-6 < dialogWidth {
 		dialogWidth = totalWidth - 6
 	}
+	if dialogWidth < 30 {
+		dialogWidth = 30
+	}
 
-	titleRendered := m.styles.ModalHeader.Render(m.Title)
+	headerBox := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(m.styles.Theme.BorderActive).
+		Border(lipgloss.NormalBorder(), false, false, true, false).
+		BorderForeground(m.styles.Theme.BorderInactive).
+		Padding(0, 0, 1, 0).
+		Width(dialogWidth - 4).
+		Render("◆ " + m.Title)
+
 	msgRendered := m.styles.ModalBody.Width(dialogWidth - 4).Render(m.Message)
 
 	var optsRendered []string
 	for i, opt := range m.Options {
 		if i == m.SelectedOpt {
-			optsRendered = append(optsRendered, m.styles.ActiveTab.Render(opt))
+			btn := lipgloss.NewStyle().
+				Bold(true).
+				Background(m.styles.Theme.BorderActive).
+				Foreground(m.styles.Theme.CardBackground).
+				Padding(0, 2).
+				Render(opt)
+			optsRendered = append(optsRendered, btn)
 		} else {
-			optsRendered = append(optsRendered, m.styles.InactiveTab.Render(opt))
+			btn := lipgloss.NewStyle().
+				Background(m.styles.Theme.HighlightRow).
+				Foreground(m.styles.Theme.TextMuted).
+				Padding(0, 2).
+				Render(opt)
+			optsRendered = append(optsRendered, btn)
 		}
 	}
 	buttons := lipgloss.JoinHorizontal(lipgloss.Top, strings.Join(optsRendered, "  "))
 
-	content := lipgloss.JoinVertical(lipgloss.Left, titleRendered, msgRendered, "", buttons)
+	content := lipgloss.JoinVertical(lipgloss.Left, headerBox, "", msgRendered, "", buttons)
 	box := m.styles.ModalBox.Width(dialogWidth).Render(content)
-
-	boxWidth := lipgloss.Width(box)
-	boxHeight := lipgloss.Height(box)
-
-	padX := (totalWidth - boxWidth) / 2
-	if padX < 0 {
-		padX = 0
-	}
-	padY := (totalHeight - boxHeight) / 2
-	if padY < 0 {
-		padY = 0
-	}
 
 	return lipgloss.Place(totalWidth, totalHeight, lipgloss.Center, lipgloss.Center, box)
 }
@@ -85,7 +95,7 @@ func NewUploadModal(s styles.Styles) UploadModal {
 }
 
 func (u *UploadModal) Render(totalWidth, totalHeight int) string {
-	dialogWidth := 58
+	dialogWidth := 60
 	if totalWidth-6 < dialogWidth {
 		dialogWidth = totalWidth - 6
 	}
@@ -93,19 +103,39 @@ func (u *UploadModal) Render(totalWidth, totalHeight int) string {
 		dialogWidth = 30
 	}
 
-	titleRendered := u.styles.ModalHeader.Render("UPLOAD (FILE OR FOLDER)")
-	destLabel := u.styles.StatusKey.Render("Target Destination: ") + u.styles.StatusDesc.Render(u.Destination)
-	promptLabel := u.styles.NormalRow.Render("Local path (file or directory):")
-	inputBox := u.Input.View()
+	headerBox := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(u.styles.Theme.BorderActive).
+		Border(lipgloss.NormalBorder(), false, false, true, false).
+		BorderForeground(u.styles.Theme.BorderInactive).
+		Padding(0, 0, 1, 0).
+		Width(dialogWidth - 4).
+		Render("📤 UPLOAD (FILE OR FOLDER)")
+
+	destLabel := lipgloss.NewStyle().Foreground(u.styles.Theme.TextSubtle).Render("Target S3 Destination:")
+	destVal := lipgloss.NewStyle().Foreground(u.styles.Theme.AccentSky).Bold(true).Render(u.Destination)
+	destBox := lipgloss.JoinVertical(lipgloss.Left, destLabel, destVal)
+
+	promptLabel := lipgloss.NewStyle().Foreground(u.styles.Theme.TextPrimary).Render("Local path (file or directory):")
+	inputFrame := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(u.styles.Theme.BorderActive).
+		Padding(0, 1).
+		Width(dialogWidth - 6).
+		Render(u.Input.View())
 
 	var errLine string
 	if u.ErrorText != "" {
-		errLine = u.styles.DangerPill.Render(u.ErrorText)
+		errLine = u.styles.DangerPill.Render("✖ " + u.ErrorText)
 	}
 
-	hint := u.styles.StatusDesc.Render("[Enter] Upload   [Esc] Cancel")
+	keyEnter := u.styles.StatusKey.Render("[Enter]")
+	descEnter := u.styles.StatusDesc.Render(" Start Upload   ")
+	keyEsc := u.styles.StatusKey.Render("[Esc]")
+	descEsc := u.styles.StatusDesc.Render(" Cancel")
+	hint := lipgloss.JoinHorizontal(lipgloss.Left, keyEnter, descEnter, keyEsc, descEsc)
 
-	items := []string{titleRendered, destLabel, "", promptLabel, inputBox}
+	items := []string{headerBox, "", destBox, "", promptLabel, inputFrame}
 	if errLine != "" {
 		items = append(items, "", errLine)
 	}
@@ -139,7 +169,7 @@ func NewDownloadModal(s styles.Styles) DownloadModal {
 }
 
 func (d *DownloadModal) Render(totalWidth, totalHeight int) string {
-	dialogWidth := 58
+	dialogWidth := 60
 	if totalWidth-6 < dialogWidth {
 		dialogWidth = totalWidth - 6
 	}
@@ -147,26 +177,46 @@ func (d *DownloadModal) Render(totalWidth, totalHeight int) string {
 		dialogWidth = 30
 	}
 
-	dialogTitle := "DOWNLOAD OBJECT"
+	dialogTitle := "📥 DOWNLOAD OBJECT"
 	targetLabelText := "Selected Object: "
 	if d.IsFolder {
-		dialogTitle = "DOWNLOAD FOLDER (RECURSIVE)"
+		dialogTitle = "📥 DOWNLOAD FOLDER (RECURSIVE)"
 		targetLabelText = "Selected Folder: "
 	}
 
-	titleRendered := d.styles.ModalHeader.Render(dialogTitle)
-	sourceLabel := d.styles.StatusKey.Render(targetLabelText) + d.styles.StatusDesc.Render(d.TargetName)
-	promptLabel := d.styles.NormalRow.Render("Local destination directory:")
-	inputBox := d.Input.View()
+	headerBox := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(d.styles.Theme.BorderActive).
+		Border(lipgloss.NormalBorder(), false, false, true, false).
+		BorderForeground(d.styles.Theme.BorderInactive).
+		Padding(0, 0, 1, 0).
+		Width(dialogWidth - 4).
+		Render(dialogTitle)
+
+	sourceLabel := lipgloss.NewStyle().Foreground(d.styles.Theme.TextSubtle).Render(targetLabelText)
+	sourceVal := lipgloss.NewStyle().Foreground(d.styles.Theme.AccentSky).Bold(true).Render(d.TargetName)
+	sourceBox := lipgloss.JoinVertical(lipgloss.Left, sourceLabel, sourceVal)
+
+	promptLabel := lipgloss.NewStyle().Foreground(d.styles.Theme.TextPrimary).Render("Local destination directory:")
+	inputFrame := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(d.styles.Theme.BorderActive).
+		Padding(0, 1).
+		Width(dialogWidth - 6).
+		Render(d.Input.View())
 
 	var errLine string
 	if d.ErrorText != "" {
-		errLine = d.styles.DangerPill.Render(d.ErrorText)
+		errLine = d.styles.DangerPill.Render("✖ " + d.ErrorText)
 	}
 
-	hint := d.styles.StatusDesc.Render("[Enter] Download   [Esc] Cancel")
+	keyEnter := d.styles.StatusKey.Render("[Enter]")
+	descEnter := d.styles.StatusDesc.Render(" Start Download   ")
+	keyEsc := d.styles.StatusKey.Render("[Esc]")
+	descEsc := d.styles.StatusDesc.Render(" Cancel")
+	hint := lipgloss.JoinHorizontal(lipgloss.Left, keyEnter, descEnter, keyEsc, descEsc)
 
-	items := []string{titleRendered, sourceLabel, "", promptLabel, inputBox}
+	items := []string{headerBox, "", sourceBox, "", promptLabel, inputFrame}
 	if errLine != "" {
 		items = append(items, "", errLine)
 	}
@@ -202,7 +252,7 @@ func NewPresignModal(s styles.Styles) PresignModal {
 }
 
 func (p *PresignModal) Render(totalWidth, totalHeight int) string {
-	dialogWidth := 64
+	dialogWidth := 66
 	if totalWidth-6 < dialogWidth {
 		dialogWidth = totalWidth - 6
 	}
@@ -210,28 +260,57 @@ func (p *PresignModal) Render(totalWidth, totalHeight int) string {
 		dialogWidth = 30
 	}
 
-	titleRendered := p.styles.ModalHeader.Render("GENERATE PRESIGNED URL")
-	targetLabel := p.styles.StatusKey.Render("Object: ") + p.styles.StatusDesc.Render(p.ObjectKey)
+	headerBox := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(p.styles.Theme.BorderActive).
+		Border(lipgloss.NormalBorder(), false, false, true, false).
+		BorderForeground(p.styles.Theme.BorderInactive).
+		Padding(0, 0, 1, 0).
+		Width(dialogWidth - 4).
+		Render("🔗 GENERATE PRESIGNED URL")
+
+	targetLabel := lipgloss.NewStyle().Foreground(p.styles.Theme.TextSubtle).Render("Target Object:")
+	targetVal := lipgloss.NewStyle().Foreground(p.styles.Theme.AccentSky).Bold(true).Render(p.ObjectKey)
+	targetBox := lipgloss.JoinVertical(lipgloss.Left, targetLabel, targetVal)
 
 	var items []string
-	items = append(items, titleRendered, targetLabel, "")
+	items = append(items, headerBox, "", targetBox, "")
 
 	if p.GeneratedURL != "" {
-		statusMsg := "URL generated and copied via OSC 52!"
+		statusMsg := "✔ URL copied to system clipboard via OSC 52!"
 		if !p.Copied {
-			statusMsg = "URL generated:"
+			statusMsg = "✔ Presigned URL ready:"
 		}
-		items = append(items, p.styles.SuccessPill.Render(statusMsg), "")
-		items = append(items, p.styles.NormalRow.Render(p.GeneratedURL), "")
-		items = append(items, p.styles.StatusDesc.Render("[Enter/Esc] Close"))
+		urlBox := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(p.styles.Theme.BorderActive).
+			Padding(0, 1).
+			Width(dialogWidth - 6).
+			Render(p.GeneratedURL)
+
+		closeHint := lipgloss.JoinHorizontal(lipgloss.Left,
+			p.styles.StatusKey.Render("[Enter/Esc]"),
+			p.styles.StatusDesc.Render(" Close"),
+		)
+		items = append(items, p.styles.SuccessPill.Render(statusMsg), "", urlBox, "", closeHint)
 	} else {
-		promptLabel := p.styles.NormalRow.Render("Expiration duration (e.g. 15m, 1h, 24h):")
-		inputBox := p.Input.View()
-		items = append(items, promptLabel, inputBox)
+		promptLabel := lipgloss.NewStyle().Foreground(p.styles.Theme.TextPrimary).Render("Expiration duration (e.g. 15m, 1h, 24h):")
+		inputFrame := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(p.styles.Theme.BorderActive).
+			Padding(0, 1).
+			Width(dialogWidth - 6).
+			Render(p.Input.View())
+
+		items = append(items, promptLabel, inputFrame)
 		if p.ErrorText != "" {
-			items = append(items, "", p.styles.DangerPill.Render(p.ErrorText))
+			items = append(items, "", p.styles.DangerPill.Render("✖ "+p.ErrorText))
 		}
-		hint := p.styles.StatusDesc.Render("[Enter] Generate & Copy   [Esc] Cancel")
+		keyEnter := p.styles.StatusKey.Render("[Enter]")
+		descEnter := p.styles.StatusDesc.Render(" Generate & Copy   ")
+		keyEsc := p.styles.StatusKey.Render("[Esc]")
+		descEsc := p.styles.StatusDesc.Render(" Cancel")
+		hint := lipgloss.JoinHorizontal(lipgloss.Left, keyEnter, descEnter, keyEsc, descEsc)
 		items = append(items, "", hint)
 	}
 

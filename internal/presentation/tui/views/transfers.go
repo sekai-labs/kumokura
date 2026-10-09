@@ -20,24 +20,30 @@ func NewTransfersView(s styles.Styles) TransfersView {
 }
 
 func (v *TransfersView) Render(width, height int) string {
-	title := v.styles.PanelTitle.Render(fmt.Sprintf("ACTIVE & COMPLETED TRANSFERS (%d)", len(v.Jobs)))
+	title := v.styles.PanelTitle.Render(fmt.Sprintf("● TRANSFERS (%d)", len(v.Jobs)))
 	var rows []string
 
-	header := fmt.Sprintf("%-28s %-8s %-12s %-10s %s", "JOB ID", "TYPE", "STATUS", "PROGRESS", "DESTINATION")
-	rows = append(rows, v.styles.StatusKey.Render(header))
-	dividerLen := width - 6
-	if dividerLen < 10 {
-		dividerLen = 10
-	}
-	rows = append(rows, strings.Repeat("─", dividerLen))
+	header := fmt.Sprintf("   %-28s %-8s %-12s %-10s %s", "JOB ID", "TYPE", "STATUS", "PROGRESS", "DESTINATION")
+	hdrStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(v.styles.Theme.TextSubtle).
+		Border(lipgloss.NormalBorder(), false, false, true, false).
+		BorderForeground(v.styles.Theme.BorderInactive)
+	rows = append(rows, hdrStyle.Width(width-4).Render(header))
 
-	maxItems := height - 6
+	maxItems := height - 5
 	if maxItems < 1 {
 		maxItems = 1
 	}
 
 	if len(v.Jobs) == 0 {
-		rows = append(rows, v.styles.StatusDesc.Render("No active or historical transfers"))
+		emptyCard := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(v.styles.Theme.BorderInactive).
+			Padding(1, 2).
+			Foreground(v.styles.Theme.TextMuted).
+			Render("No active or historical transfers.\nUpload or download files to track transfer operations.")
+		rows = append(rows, "", emptyCard)
 	} else {
 		for i, j := range v.Jobs {
 			if len(rows)-2 >= maxItems {
@@ -65,10 +71,19 @@ func (v *TransfersView) Render(width, height int) string {
 				jobID = string(runes) + "…"
 			}
 
+			statusStr := string(j.Status)
+			if strings.EqualFold(statusStr, "completed") {
+				statusStr = "✔ COMPLETED"
+			} else if strings.EqualFold(statusStr, "failed") {
+				statusStr = "✖ FAILED"
+			} else if strings.EqualFold(statusStr, "running") || strings.EqualFold(statusStr, "in_progress") {
+				statusStr = "⚡ ACTIVE"
+			}
+
 			line := fmt.Sprintf("%-28s %-8s %-12s %-10s %s",
 				jobID,
 				string(j.Type),
-				string(j.Status),
+				statusStr,
 				prog,
 				j.DestinationPath,
 			)

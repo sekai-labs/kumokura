@@ -22,26 +22,30 @@ func NewSyncView(s styles.Styles) SyncView {
 }
 
 func (v *SyncView) Render(width, height int) string {
-	title := v.styles.PanelTitle.Render(fmt.Sprintf("SYNC ENGINE: JOBS & CONFIGURATIONS (%d)", len(v.Jobs)))
+	title := v.styles.PanelTitle.Render(fmt.Sprintf("● SYNC ENGINE (%d)", len(v.Jobs)))
 	var rows []string
 
-	header := fmt.Sprintf("%-24s %-12s %-20s %-20s %-10s", "JOB ID", "DIRECTION", "SOURCE", "DESTINATION", "STATUS")
-	rows = append(rows, v.styles.StatusKey.Render(header))
-	dividerLen := width - 6
-	if dividerLen < 10 {
-		dividerLen = 10
-	}
-	rows = append(rows, strings.Repeat("─", dividerLen))
+	header := fmt.Sprintf("   %-24s %-12s %-20s %-20s %-10s", "JOB ID", "DIRECTION", "SOURCE", "DESTINATION", "STATUS")
+	hdrStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(v.styles.Theme.TextSubtle).
+		Border(lipgloss.NormalBorder(), false, false, true, false).
+		BorderForeground(v.styles.Theme.BorderInactive)
+	rows = append(rows, hdrStyle.Width(width-4).Render(header))
 
-	maxItems := height - 6
+	maxItems := height - 5
 	if maxItems < 1 {
 		maxItems = 1
 	}
 
 	if len(v.Jobs) == 0 {
-		rows = append(rows, v.styles.StatusDesc.Render("No active or saved synchronization jobs"))
-		rows = append(rows, "")
-		rows = append(rows, v.styles.StatusDesc.Render("Use `kumokura sync <source> <target>` to run high-throughput sync operations."))
+		emptyCard := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(v.styles.Theme.BorderInactive).
+			Padding(1, 2).
+			Foreground(v.styles.Theme.TextMuted).
+			Render("No active or saved synchronization jobs.\nRun 'kumokura sync <source> <target>' from the CLI for bidirectional sync.")
+		rows = append(rows, "", emptyCard)
 	} else {
 		for i, j := range v.Jobs {
 			if len(rows)-2 >= maxItems {
@@ -99,12 +103,21 @@ func (v *SyncView) Render(width, height int) string {
 				dst = string(runes) + "…"
 			}
 
+			statusStr := string(j.Status)
+			if strings.EqualFold(statusStr, "completed") {
+				statusStr = "✔ COMPLETED"
+			} else if strings.EqualFold(statusStr, "failed") {
+				statusStr = "✖ FAILED"
+			} else if strings.EqualFold(statusStr, "running") {
+				statusStr = "⚡ SYNCING"
+			}
+
 			line := fmt.Sprintf("%-24s %-12s %-20s %-20s %-10s",
 				jobID,
 				string(j.SyncDirection),
 				src,
 				dst,
-				j.Status,
+				statusStr,
 			)
 
 			var rowStr string

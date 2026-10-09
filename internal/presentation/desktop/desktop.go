@@ -4,19 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/app"
-	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/dialog"
-	"fyne.io/fyne/v2/theme"
-	"fyne.io/fyne/v2/widget"
-	accountDomain "github.com/sekai-labs/kumokura/internal/accounts/domain"
-	accountPorts "github.com/sekai-labs/kumokura/internal/accounts/ports"
-	"github.com/sekai-labs/kumokura/internal/bootstrap"
-	bucketDomain "github.com/sekai-labs/kumokura/internal/buckets/domain"
-	objectDomain "github.com/sekai-labs/kumokura/internal/objects/domain"
-	"github.com/sekai-labs/kumokura/internal/platform/config"
-	transferDomain "github.com/sekai-labs/kumokura/internal/transfers/domain"
 	"io"
 	"os"
 	"path/filepath"
@@ -24,6 +11,21 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/theme"
+	"fyne.io/fyne/v2/widget"
+
+	accountDomain "github.com/sekai-labs/kumokura/internal/accounts/domain"
+	accountPorts "github.com/sekai-labs/kumokura/internal/accounts/ports"
+	"github.com/sekai-labs/kumokura/internal/bootstrap"
+	bucketDomain "github.com/sekai-labs/kumokura/internal/buckets/domain"
+	objectDomain "github.com/sekai-labs/kumokura/internal/objects/domain"
+	"github.com/sekai-labs/kumokura/internal/platform/config"
+	transferDomain "github.com/sekai-labs/kumokura/internal/transfers/domain"
 )
 
 type DesktopApp struct {
@@ -37,6 +39,7 @@ type DesktopApp struct {
 
 	buckets        []bucketDomain.Bucket
 	selectedBucket string
+	bucketFilter   string
 
 	prefixes        []objectDomain.Prefix
 	objects         []objectDomain.Object
@@ -54,9 +57,13 @@ type DesktopApp struct {
 	accountSelect *widget.Select
 	bucketBadge   *widget.Label
 	searchEntry   *widget.Entry
+	endpointBadge *widget.Label
 
 	accountList *widget.List
 	bucketList  *widget.List
+
+	bucketTabBadge *widget.Label
+	bucketSearch   *widget.Entry
 
 	objectTable         *widget.Table
 	emptyStateCard      *widget.Card
@@ -85,7 +92,17 @@ type DesktopApp struct {
 	previewContentEntry *widget.Entry
 	previewStatusLabel  *widget.Label
 
-	transferList *widget.List
+	inspectorSplit *container.Split
+	inspectorOpen  bool
+
+	transferList   *widget.List
+	transfersTray  *fyne.Container
+	transfersOpen  bool
+	transferStatus *widget.Label
+
+	breadcrumbContainer *fyne.Container
+	toastLabel          *widget.Label
+	toastTimer          *time.Timer
 
 	refreshTicker *time.Ticker
 	stopTicker    chan struct{}
@@ -106,6 +123,8 @@ func NewDesktopAppWithFyneApp(appContainer *bootstrap.AppContainer, a fyne.App) 
 		lastSelectedRow: -1,
 		lastSelectedCol: -1,
 		stopTicker:      make(chan struct{}),
+		inspectorOpen:   true,
+		transfersOpen:   true,
 	}
 	da.buildUI()
 	return da
@@ -116,6 +135,28 @@ func (d *DesktopApp) Run() {
 	d.startBackgroundPoller()
 	d.window.ShowAndRun()
 	close(d.stopTicker)
+}
+
+func (d *DesktopApp) showToast(message string) {
+	if d.fyneApp != nil {
+		d.fyneApp.SendNotification(fyne.NewNotification("Kumokura", message))
+	}
+	fyne.Do(func() {
+		if d.toastLabel != nil {
+			d.toastLabel.SetText(message)
+			d.toastLabel.Show()
+			if d.toastTimer != nil {
+				d.toastTimer.Stop()
+			}
+			d.toastTimer = time.AfterFunc(4*time.Second, func() {
+				fyne.Do(func() {
+					if d.toastLabel != nil {
+						d.toastLabel.Hide()
+					}
+				})
+			})
+		}
+	})
 }
 
 func (d *DesktopApp) buildUI() {
@@ -135,23 +176,63 @@ func (d *DesktopApp) buildUI() {
 }
 
 func (d *DesktopApp) buildHeader() fyne.CanvasObject {
+	brandLabel := widget.NewLabelWithStyle("☁ Kumokura", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+
 	d.accountSelect = widget.NewSelect([]string{}, func(selected string) {
 		d.onAccountSelectedByName(selected)
 	})
-	d.accountSelect.PlaceHolder = "Select Account"
+	d.accountSelect.PlaceHolder = "Select Profile"
 
 	addAccountBtn := widget.NewButtonWithIcon("Add Account", theme.ContentAddIcon(), func() {
 		d.showAddAccountDialog()
 	})
 
+	d.endpointBadge = widget.NewLabel("(No Region)")
+	d.endpointBadge.TextStyle = fyne.TextStyle{Italic: true}
+
+	leftHeader := container.NewHBox(
+		brandLabel,
+		widget.NewSeparator(),
+		widget.NewIcon(theme.AccountIcon()),
+		d.accountSelect,
+		addAccountBtn,
+		d.endpointBadge,
+	)
+
 	d.bucketBadge = widget.NewLabel("No Bucket Selected")
 	d.bucketBadge.TextStyle = fyne.TextStyle{Bold: true}
 
+	d.breadcrumbContainer = container.NewHBox()
+	d.updateBreadcrumbs()
+
+	centerHeader := container.NewHBox(
+		widget.NewIcon(theme.StorageIcon()),
+		d.bucketBadge,
+		widget.NewSeparator(),
+		d.breadcrumbContainer,
+	)
+
 	d.searchEntry = widget.NewEntry()
-	d.searchEntry.SetPlaceHolder("Search objects by key...")
+	d.searchEntry.SetPlaceHolder("Instant search objects...")
+	d.searchEntry.SetIcon(theme.SearchIcon())
 	d.searchEntry.OnChanged = func(query string) {
 		d.onSearchChanged(query)
 	}
+
+	clearSearchBtn := widget.NewButtonWithIcon("", theme.CancelIcon(), func() {
+		if d.searchEntry != nil {
+			d.searchEntry.SetText("")
+		}
+	})
+	clearSearchBtn.Importance = widget.LowImportance
+
+	searchBox := container.NewBorder(
+		nil,
+		nil,
+		nil,
+		clearSearchBtn,
+		d.searchEntry,
+	)
 
 	settingsBtn := widget.NewButtonWithIcon("Settings", theme.SettingsIcon(), func() {
 		d.showSettingsDialog()
@@ -160,27 +241,94 @@ func (d *DesktopApp) buildHeader() fyne.CanvasObject {
 	refreshBtn := widget.NewButtonWithIcon("Refresh", theme.ViewRefreshIcon(), func() {
 		d.refreshAll()
 	})
-	leftHeader := container.NewHBox(
-		widget.NewLabelWithStyle("Account:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		d.accountSelect,
-		addAccountBtn,
-		widget.NewSeparator(),
-		widget.NewLabelWithStyle("Bucket:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		d.bucketBadge,
+
+	rightHeader := container.NewHBox(
+		container.NewGridWrap(fyne.NewSize(240, 36), searchBox),
+		settingsBtn,
+		refreshBtn,
 	)
 
-	rightHeader := container.NewBorder(
+	topBar := container.NewBorder(
 		nil,
 		nil,
-		nil,
-		container.NewHBox(settingsBtn, refreshBtn),
-		d.searchEntry,
+		leftHeader,
+		rightHeader,
+		container.NewCenter(centerHeader),
+	)
+
+	d.toastLabel = widget.NewLabel("")
+	d.toastLabel.TextStyle = fyne.TextStyle{Italic: true, Bold: true}
+	d.toastLabel.Hide()
+
+	toastBar := container.NewHBox(
+		widget.NewIcon(theme.InfoIcon()),
+		d.toastLabel,
 	)
 
 	return container.NewVBox(
-		container.NewBorder(nil, nil, leftHeader, nil, rightHeader),
+		topBar,
+		toastBar,
 		widget.NewSeparator(),
 	)
+}
+
+func (d *DesktopApp) updateBreadcrumbs() {
+	if d.breadcrumbContainer == nil {
+		return
+	}
+
+	d.mu.RLock()
+	bucket := d.selectedBucket
+	prefix := d.currentPrefix
+	isFlat := d.flatMode
+	d.mu.RUnlock()
+
+	d.breadcrumbContainer.Objects = nil
+
+	if bucket == "" {
+		lbl := widget.NewLabel("s3://")
+		lbl.TextStyle = fyne.TextStyle{Monospace: true}
+		d.breadcrumbContainer.Add(lbl)
+		d.breadcrumbContainer.Refresh()
+		return
+	}
+
+	bucketBtn := widget.NewButton(fmt.Sprintf("s3://%s", bucket), func() {
+		d.navigateToPrefix("")
+	})
+	bucketBtn.Importance = widget.LowImportance
+	d.breadcrumbContainer.Add(bucketBtn)
+
+	if isFlat {
+		lbl := widget.NewLabel("/ [flat view]")
+		lbl.TextStyle = fyne.TextStyle{Monospace: true, Italic: true}
+		d.breadcrumbContainer.Add(lbl)
+		d.breadcrumbContainer.Refresh()
+		return
+	}
+
+	if prefix != "" {
+		parts := strings.Split(strings.TrimSuffix(prefix, "/"), "/")
+		accumulated := ""
+		for _, part := range parts {
+			if part == "" {
+				continue
+			}
+			accumulated += part + "/"
+			targetPath := accumulated
+			sep := widget.NewLabel("/")
+			sep.TextStyle = fyne.TextStyle{Monospace: true}
+			d.breadcrumbContainer.Add(sep)
+
+			partBtn := widget.NewButton(part, func() {
+				d.navigateToPrefix(targetPath)
+			})
+			partBtn.Importance = widget.LowImportance
+			d.breadcrumbContainer.Add(partBtn)
+		}
+	}
+
+	d.breadcrumbContainer.Refresh()
 }
 
 func (d *DesktopApp) buildMasterDetail() fyne.CanvasObject {
@@ -188,17 +336,36 @@ func (d *DesktopApp) buildMasterDetail() fyne.CanvasObject {
 	centerPanel := d.buildCenterPanel()
 	rightPanel := d.buildRightPanel()
 
-	innerSplit := container.NewHSplit(centerPanel, rightPanel)
-	innerSplit.SetOffset(0.70)
+	d.inspectorSplit = container.NewHSplit(centerPanel, rightPanel)
+	d.inspectorSplit.SetOffset(0.70)
 
-	outerSplit := container.NewHSplit(leftPanel, innerSplit)
-	outerSplit.SetOffset(0.22)
+	outerSplit := container.NewHSplit(leftPanel, d.inspectorSplit)
+	outerSplit.SetOffset(0.24)
 
 	return outerSplit
 }
 
+func (d *DesktopApp) getFilteredBuckets() []bucketDomain.Bucket {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	if d.bucketFilter == "" {
+		return d.buckets
+	}
+
+	q := strings.ToLower(d.bucketFilter)
+	var filtered []bucketDomain.Bucket
+	for _, b := range d.buckets {
+		if strings.Contains(strings.ToLower(b.Name), q) {
+			filtered = append(filtered, b)
+		}
+	}
+	return filtered
+}
+
 func (d *DesktopApp) buildLeftPanel() fyne.CanvasObject {
 	accountHeader := container.NewHBox(
+		widget.NewIcon(theme.AccountIcon()),
 		widget.NewLabelWithStyle("Accounts", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 	)
 
@@ -209,13 +376,23 @@ func (d *DesktopApp) buildLeftPanel() fyne.CanvasObject {
 			return len(d.accounts)
 		},
 		func() fyne.CanvasObject {
-			return widget.NewLabel("Account Placeholder")
+			icon := widget.NewIcon(theme.AccountIcon())
+			name := widget.NewLabel("Account Placeholder")
+			name.Truncation = fyne.TextTruncateEllipsis
+			return container.NewHBox(icon, name)
 		},
 		func(id widget.ListItemID, obj fyne.CanvasObject) {
 			d.mu.RLock()
 			defer d.mu.RUnlock()
 			if id < len(d.accounts) {
-				obj.(*widget.Label).SetText(fmt.Sprintf("%s (%s)", d.accounts[id].Name, d.accounts[id].Type))
+				box := obj.(*fyne.Container)
+				lbl := box.Objects[1].(*widget.Label)
+				acc := d.accounts[id]
+				selectedMark := ""
+				if d.selectedAccount != nil && d.selectedAccount.ID == acc.ID {
+					selectedMark = " ● "
+				}
+				lbl.SetText(fmt.Sprintf("%s%s (%s)", selectedMark, acc.Name, acc.Type))
 			}
 		},
 	)
@@ -230,70 +407,118 @@ func (d *DesktopApp) buildLeftPanel() fyne.CanvasObject {
 		}
 	}
 
-	createBucketBtn := widget.NewButtonWithIcon("Create", theme.ContentAddIcon(), func() {
+	createBucketBtn := widget.NewButtonWithIcon("New", theme.ContentAddIcon(), func() {
 		d.showCreateBucketDialog()
 	})
 	deleteBucketBtn := widget.NewButtonWithIcon("Delete", theme.DeleteIcon(), func() {
 		d.showDeleteBucketDialog()
 	})
 
-	bucketHeader := container.NewBorder(
-		nil,
-		nil,
-		widget.NewLabelWithStyle("Buckets", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		container.NewHBox(createBucketBtn, deleteBucketBtn),
+	d.bucketTabBadge = widget.NewLabelWithStyle("(0)", fyne.TextAlignLeading, fyne.TextStyle{Italic: true})
+
+	d.bucketSearch = widget.NewEntry()
+	d.bucketSearch.SetPlaceHolder("Filter buckets...")
+	d.bucketSearch.SetIcon(theme.SearchIcon())
+	d.bucketSearch.OnChanged = func(q string) {
+		d.mu.Lock()
+		d.bucketFilter = strings.TrimSpace(q)
+		d.mu.Unlock()
+		if d.bucketList != nil {
+			d.bucketList.Refresh()
+		}
+	}
+
+	bucketHeader := container.NewVBox(
+		container.NewBorder(
+			nil,
+			nil,
+			container.NewHBox(
+				widget.NewIcon(theme.StorageIcon()),
+				widget.NewLabelWithStyle("Buckets", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+				d.bucketTabBadge,
+			),
+			container.NewHBox(createBucketBtn, deleteBucketBtn),
+		),
+		d.bucketSearch,
 	)
 
 	d.bucketList = widget.NewList(
 		func() int {
-			d.mu.RLock()
-			defer d.mu.RUnlock()
-			return len(d.buckets)
+			return len(d.getFilteredBuckets())
 		},
 		func() fyne.CanvasObject {
-			return widget.NewLabel("Bucket Placeholder")
+			icon := widget.NewIcon(theme.StorageIcon())
+			name := widget.NewLabel("Bucket Placeholder")
+			name.Truncation = fyne.TextTruncateEllipsis
+			return container.NewHBox(icon, name)
 		},
 		func(id widget.ListItemID, obj fyne.CanvasObject) {
+			filtered := d.getFilteredBuckets()
 			d.mu.RLock()
-			defer d.mu.RUnlock()
-			if id < len(d.buckets) {
-				obj.(*widget.Label).SetText(d.buckets[id].Name)
+			selectedName := d.selectedBucket
+			d.mu.RUnlock()
+			if id < len(filtered) {
+				box := obj.(*fyne.Container)
+				lbl := box.Objects[1].(*widget.Label)
+				b := filtered[id]
+				selectedMark := ""
+				if b.Name == selectedName {
+					selectedMark = "▶ "
+				}
+				regText := ""
+				if b.Region != "" {
+					regText = fmt.Sprintf(" [%s]", b.Region)
+				}
+				lbl.SetText(fmt.Sprintf("%s%s%s", selectedMark, b.Name, regText))
 			}
 		},
 	)
 	d.bucketList.OnSelected = func(id widget.ListItemID) {
-		d.mu.RLock()
-		if id < len(d.buckets) {
-			bName := d.buckets[id].Name
-			d.mu.RUnlock()
+		filtered := d.getFilteredBuckets()
+		if id < len(filtered) {
+			bName := filtered[id].Name
 			d.selectBucket(bName)
-		} else {
-			d.mu.RUnlock()
 		}
 	}
 
 	accountsBox := container.NewBorder(accountHeader, nil, nil, nil, d.accountList)
 	bucketsBox := container.NewBorder(bucketHeader, nil, nil, nil, d.bucketList)
 
-	return container.NewVSplit(accountsBox, bucketsBox)
+	accTab := container.NewTabItemWithIcon("Accounts", theme.AccountIcon(), accountsBox)
+	bucketTab := container.NewTabItemWithIcon("Buckets", theme.StorageIcon(), bucketsBox)
+	tabs := container.NewAppTabs(accTab, bucketTab)
+	tabs.SetTabLocation(container.TabLocationTop)
+	tabs.SelectIndex(1)
+
+	return tabs
 }
 
 func (d *DesktopApp) buildCenterPanel() fyne.CanvasObject {
 	uploadFileBtn := widget.NewButtonWithIcon("Upload File", theme.UploadIcon(), func() {
 		d.showUploadDialog()
 	})
+	uploadFileBtn.Importance = widget.HighImportance
+
 	uploadFolderBtn := widget.NewButtonWithIcon("Upload Folder", theme.FolderNewIcon(), func() {
 		d.showUploadFolderDialog()
 	})
+
+	newFolderBtn := widget.NewButtonWithIcon("New Folder", theme.FolderNewIcon(), func() {
+		d.showCreateFolderDialog()
+	})
+
 	previewTopBtn := widget.NewButtonWithIcon("Preview", theme.VisibilityIcon(), func() {
 		d.previewSelectedObject()
 	})
+
 	downloadBtn := widget.NewButtonWithIcon("Download", theme.DownloadIcon(), func() {
 		d.downloadSelectedObject()
 	})
+
 	deleteBtn := widget.NewButtonWithIcon("Delete", theme.DeleteIcon(), func() {
 		d.deleteSelectedObject()
 	})
+	deleteBtn.Importance = widget.DangerImportance
 
 	d.openFolderBtn = widget.NewButtonWithIcon("Open Folder", theme.FolderOpenIcon(), func() {
 		d.openSelectedFolder()
@@ -306,44 +531,47 @@ func (d *DesktopApp) buildCenterPanel() fyne.CanvasObject {
 	d.viewModeSelect.SetSelected("Hierarchical (Folders)")
 
 	actionsBar := container.NewHBox(
-		d.viewModeSelect,
-		widget.NewSeparator(),
-		d.openFolderBtn,
 		uploadFileBtn,
 		uploadFolderBtn,
+		newFolderBtn,
+		widget.NewSeparator(),
+		d.openFolderBtn,
 		previewTopBtn,
 		downloadBtn,
 		deleteBtn,
+		widget.NewSeparator(),
+		d.viewModeSelect,
 	)
 
-	tableHeader := container.NewBorder(
-		nil,
-		nil,
-		widget.NewLabelWithStyle("Objects", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		actionsBar,
-	)
-
-	d.upFolderBtn = widget.NewButtonWithIcon("Up / Parent", theme.NavigateBackIcon(), func() {
+	d.upFolderBtn = widget.NewButtonWithIcon("⬆ Up", theme.NavigateBackIcon(), func() {
 		d.navigateUp()
 	})
+	d.upFolderBtn.Importance = widget.HighImportance
 	d.upFolderBtn.Disable()
 
 	d.prefixNavLabel = widget.NewLabel("Prefix: /")
 	d.prefixNavLabel.TextStyle = fyne.TextStyle{Monospace: true}
 	d.prefixNavLabel.Truncation = fyne.TextTruncateEllipsis
 
+	toggleInspectorBtn := widget.NewButtonWithIcon("Inspector", theme.MenuIcon(), func() {
+		d.toggleInspector()
+	})
+	toggleInspectorBtn.Importance = widget.LowImportance
+
 	navBar := container.NewBorder(
 		nil,
 		nil,
 		d.upFolderBtn,
-		nil,
+		toggleInspectorBtn,
 		d.prefixNavLabel,
 	)
 
 	topControls := container.NewVBox(
-		tableHeader,
+		actionsBar,
 		navBar,
+		widget.NewSeparator(),
 	)
+
 	d.objectTable = widget.NewTable(
 		func() (int, int) {
 			d.mu.RLock()
@@ -351,21 +579,26 @@ func (d *DesktopApp) buildCenterPanel() fyne.CanvasObject {
 			return len(d.filteredObjects) + 1, 4
 		},
 		func() fyne.CanvasObject {
+			icon := widget.NewIcon(theme.FileIcon())
 			lbl := widget.NewLabel("Cell text placeholder")
 			lbl.Truncation = fyne.TextTruncateEllipsis
-			return lbl
+			return container.NewHBox(icon, lbl)
 		},
 		func(id widget.TableCellID, cell fyne.CanvasObject) {
-			lbl := cell.(*widget.Label)
+			box := cell.(*fyne.Container)
+			icon := box.Objects[0].(*widget.Icon)
+			lbl := box.Objects[1].(*widget.Label)
+
 			if id.Row == 0 {
+				icon.Hide()
 				lbl.TextStyle = fyne.TextStyle{Bold: true}
 				switch id.Col {
 				case 0:
-					lbl.SetText("Key")
+					lbl.SetText("Name")
 				case 1:
 					lbl.SetText("Size")
 				case 2:
-					lbl.SetText("Storage Class")
+					lbl.SetText("Type / Storage Class")
 				case 3:
 					lbl.SetText("Last Modified")
 				}
@@ -377,6 +610,7 @@ func (d *DesktopApp) buildCenterPanel() fyne.CanvasObject {
 			defer d.mu.RUnlock()
 			idx := id.Row - 1
 			if idx < 0 || idx >= len(d.filteredObjects) {
+				icon.Hide()
 				lbl.SetText("")
 				return
 			}
@@ -384,12 +618,16 @@ func (d *DesktopApp) buildCenterPanel() fyne.CanvasObject {
 			switch id.Col {
 			case 0:
 				if obj.IsPrefix {
+					icon.SetResource(theme.FolderIcon())
+					icon.Show()
 					displayKey := obj.Key
 					if !d.flatMode && d.currentPrefix != "" {
 						displayKey = strings.TrimPrefix(displayKey, d.currentPrefix)
 					}
-					lbl.SetText("[DIR] " + displayKey)
+					lbl.SetText(displayKey)
 				} else {
+					icon.SetResource(theme.FileIcon())
+					icon.Show()
 					displayKey := obj.Key
 					if !d.flatMode && d.currentPrefix != "" {
 						displayKey = strings.TrimPrefix(displayKey, d.currentPrefix)
@@ -397,18 +635,25 @@ func (d *DesktopApp) buildCenterPanel() fyne.CanvasObject {
 					lbl.SetText(displayKey)
 				}
 			case 1:
+				icon.Hide()
 				if obj.IsPrefix {
 					lbl.SetText("-")
 				} else {
 					lbl.SetText(formatBytes(obj.Size))
 				}
 			case 2:
+				icon.Hide()
 				if obj.IsPrefix {
-					lbl.SetText("Directory")
+					lbl.SetText("📁 Folder")
 				} else {
-					lbl.SetText(string(obj.StorageClass))
+					class := string(obj.StorageClass)
+					if class == "" {
+						class = "STANDARD"
+					}
+					lbl.SetText(class)
 				}
 			case 3:
+				icon.Hide()
 				if obj.IsPrefix {
 					lbl.SetText("-")
 				} else {
@@ -418,10 +663,10 @@ func (d *DesktopApp) buildCenterPanel() fyne.CanvasObject {
 		},
 	)
 
-	d.objectTable.SetColumnWidth(0, 320)
-	d.objectTable.SetColumnWidth(1, 100)
-	d.objectTable.SetColumnWidth(2, 140)
-	d.objectTable.SetColumnWidth(3, 180)
+	d.objectTable.SetColumnWidth(0, 360)
+	d.objectTable.SetColumnWidth(1, 110)
+	d.objectTable.SetColumnWidth(2, 160)
+	d.objectTable.SetColumnWidth(3, 190)
 
 	d.objectTable.OnSelected = func(id widget.TableCellID) {
 		if id.Row == 0 {
@@ -447,15 +692,19 @@ func (d *DesktopApp) buildCenterPanel() fyne.CanvasObject {
 	d.emptyUploadBtn = widget.NewButtonWithIcon("Upload File", theme.UploadIcon(), func() {
 		d.showUploadDialog()
 	})
+	d.emptyUploadBtn.Importance = widget.HighImportance
+
 	d.emptyUploadDirBtn = widget.NewButtonWithIcon("Upload Folder", theme.FolderNewIcon(), func() {
 		d.showUploadFolderDialog()
 	})
+
 	d.emptyClearFilterBtn = widget.NewButtonWithIcon("Clear Filter", theme.CancelIcon(), func() {
 		if d.searchEntry != nil {
 			d.searchEntry.SetText("")
 		}
 	})
 	d.emptyClearFilterBtn.Hide()
+
 	emptyActionsBox := container.NewHBox(d.emptyUploadBtn, d.emptyUploadDirBtn, d.emptyClearFilterBtn)
 	d.emptyStateCard = widget.NewCard(
 		"No Objects Found",
@@ -466,6 +715,7 @@ func (d *DesktopApp) buildCenterPanel() fyne.CanvasObject {
 		),
 	)
 	d.emptyStateCard.Hide()
+
 	d.centerContainer = container.NewStack(
 		d.objectTable,
 		d.emptyStateCard,
@@ -475,6 +725,18 @@ func (d *DesktopApp) buildCenterPanel() fyne.CanvasObject {
 	return container.NewBorder(topControls, nil, nil, nil, d.centerContainer)
 }
 
+func (d *DesktopApp) toggleInspector() {
+	if d.inspectorSplit == nil {
+		return
+	}
+	d.inspectorOpen = !d.inspectorOpen
+	if d.inspectorOpen {
+		d.inspectorSplit.SetOffset(0.70)
+	} else {
+		d.inspectorSplit.SetOffset(1.0)
+	}
+}
+
 func (d *DesktopApp) buildRightPanel() fyne.CanvasObject {
 	d.metadataLabel = widget.NewLabel("Select an object to inspect details.")
 	d.metadataLabel.Wrapping = fyne.TextWrapWord
@@ -482,12 +744,62 @@ func (d *DesktopApp) buildRightPanel() fyne.CanvasObject {
 	d.presignedLabel = widget.NewEntry()
 	d.presignedLabel.SetPlaceHolder("Presigned URL will show here")
 
-	genURLBtn := widget.NewButtonWithIcon("Generate Presigned URL (1h)", theme.MediaPlayIcon(), func() {
+	genURLBtn := widget.NewButtonWithIcon("Generate (1h)", theme.MediaPlayIcon(), func() {
 		d.generatePresignedURL()
 	})
 
+	copyPresignedBtn := widget.NewButtonWithIcon("Copy", theme.ContentCopyIcon(), func() {
+		if d.presignedLabel.Text != "" {
+			d.window.Clipboard().SetContent(d.presignedLabel.Text)
+			d.showToast("Presigned URL copied to clipboard")
+		}
+	})
+
+	presignedBox := container.NewBorder(
+		nil,
+		nil,
+		genURLBtn,
+		copyPresignedBtn,
+		d.presignedLabel,
+	)
+
+	copyURIBtn := widget.NewButtonWithIcon("Copy S3 URI", theme.ContentCopyIcon(), func() {
+		d.mu.RLock()
+		b := d.selectedBucket
+		obj := d.selectedObject
+		d.mu.RUnlock()
+		if b != "" && obj != nil {
+			uri := fmt.Sprintf("s3://%s/%s", b, obj.Key)
+			d.window.Clipboard().SetContent(uri)
+			d.showToast("S3 URI copied: " + uri)
+		}
+	})
+
+	actionPreviewBtn := widget.NewButtonWithIcon("Preview Content", theme.VisibilityIcon(), func() {
+		d.previewSelectedObject()
+	})
+
+	actionDownloadBtn := widget.NewButtonWithIcon("Download", theme.DownloadIcon(), func() {
+		d.downloadSelectedObject()
+	})
+
+	actionDeleteBtn := widget.NewButtonWithIcon("Delete", theme.DeleteIcon(), func() {
+		d.deleteSelectedObject()
+	})
+	actionDeleteBtn.Importance = widget.DangerImportance
+
+	quickActions := container.NewVBox(
+		widget.NewLabelWithStyle("Quick Actions", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		container.NewHBox(actionPreviewBtn, copyURIBtn),
+		container.NewHBox(actionDownloadBtn, actionDeleteBtn),
+	)
+
 	d.tagsLabel = widget.NewLabel("Tags: None")
 	d.tagsLabel.Wrapping = fyne.TextWrapWord
+
+	tagsAccordion := widget.NewAccordion(
+		widget.NewAccordionItem("Metadata & Tags", d.tagsLabel),
+	)
 
 	d.previewBtn = widget.NewButtonWithIcon("Preview Object", theme.VisibilityIcon(), func() {
 		d.previewSelectedObject()
@@ -505,8 +817,10 @@ func (d *DesktopApp) buildRightPanel() fyne.CanvasObject {
 	previewScroll := container.NewGridWrap(fyne.NewSize(240, 160), d.previewContentEntry)
 
 	detailsContent := container.NewVBox(
-		widget.NewLabelWithStyle("Metadata", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewLabelWithStyle("File Summary", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		d.metadataLabel,
+		widget.NewSeparator(),
+		quickActions,
 		widget.NewSeparator(),
 		widget.NewLabelWithStyle("Content Preview", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		container.NewHBox(d.previewBtn),
@@ -514,19 +828,37 @@ func (d *DesktopApp) buildRightPanel() fyne.CanvasObject {
 		previewScroll,
 		widget.NewSeparator(),
 		widget.NewLabelWithStyle("Presigned URL", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		genURLBtn,
-		d.presignedLabel,
+		presignedBox,
 		widget.NewSeparator(),
-		widget.NewLabelWithStyle("Tags & Attributes", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		d.tagsLabel,
+		tagsAccordion,
 	)
 
-	d.detailsCard = widget.NewCard("Object Details", "Metadata and Inspector", container.NewVScroll(detailsContent))
+	d.detailsCard = widget.NewCard("Object Inspector", "Metadata, actions & preview", container.NewVScroll(detailsContent))
 	return d.detailsCard
 }
 
 func (d *DesktopApp) buildBottomPanel() fyne.CanvasObject {
 	statusTitle := widget.NewLabelWithStyle("Transfers & Activity", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+
+	d.transferStatus = widget.NewLabel("Idle")
+	d.transferStatus.TextStyle = fyne.TextStyle{Italic: true}
+
+	clearCompletedBtn := widget.NewButtonWithIcon("Clear Completed", theme.ContentClearIcon(), func() {
+		d.clearCompletedTransfers()
+	})
+	clearCompletedBtn.Importance = widget.LowImportance
+
+	toggleTransfersBtn := widget.NewButtonWithIcon("Toggle Tray", theme.MenuDropDownIcon(), func() {
+		d.toggleTransfersTray()
+	})
+	toggleTransfersBtn.Importance = widget.LowImportance
+
+	topBar := container.NewBorder(
+		nil,
+		nil,
+		container.NewHBox(widget.NewIcon(theme.HistoryIcon()), statusTitle, d.transferStatus),
+		container.NewHBox(clearCompletedBtn, toggleTransfersBtn),
+	)
 
 	d.transferList = widget.NewList(
 		func() int {
@@ -535,10 +867,13 @@ func (d *DesktopApp) buildBottomPanel() fyne.CanvasObject {
 			return len(d.jobs)
 		},
 		func() fyne.CanvasObject {
+			icon := widget.NewIcon(theme.UploadIcon())
 			nameLabel := widget.NewLabel("Job Name")
+			nameLabel.Truncation = fyne.TextTruncateEllipsis
 			statusLabel := widget.NewLabel("Status")
 			progress := widget.NewProgressBar()
-			return container.NewBorder(nil, nil, nameLabel, statusLabel, progress)
+			leftBox := container.NewHBox(icon, nameLabel)
+			return container.NewBorder(nil, nil, leftBox, statusLabel, progress)
 		},
 		func(id widget.ListItemID, obj fyne.CanvasObject) {
 			d.mu.RLock()
@@ -546,11 +881,19 @@ func (d *DesktopApp) buildBottomPanel() fyne.CanvasObject {
 			if id < len(d.jobs) {
 				j := d.jobs[id]
 				border := obj.(*fyne.Container)
-				nameLbl := border.Objects[1].(*widget.Label)
+				leftBox := border.Objects[1].(*fyne.Container)
+				icon := leftBox.Objects[0].(*widget.Icon)
+				nameLbl := leftBox.Objects[1].(*widget.Label)
 				statusLbl := border.Objects[2].(*widget.Label)
 				pBar := border.Objects[0].(*widget.ProgressBar)
 
-				nameLbl.SetText(fmt.Sprintf("[%s] %s -> %s", j.Type, j.SourcePath, j.DestinationPath))
+				if j.Type == transferDomain.TransferTypeUpload {
+					icon.SetResource(theme.UploadIcon())
+				} else {
+					icon.SetResource(theme.DownloadIcon())
+				}
+
+				nameLbl.SetText(fmt.Sprintf("[%s] %s -> %s", j.Type, filepath.Base(j.SourcePath), filepath.Base(j.DestinationPath)))
 				statusLbl.SetText(fmt.Sprintf("%s (%s / %s)", j.Status, formatBytes(j.BytesTransferred), formatBytes(j.TotalBytes)))
 
 				if j.TotalBytes > 0 {
@@ -563,11 +906,49 @@ func (d *DesktopApp) buildBottomPanel() fyne.CanvasObject {
 	)
 
 	scrollTransfers := container.NewScroll(d.transferList)
+	trayContent := container.NewGridWrap(fyne.NewSize(1200, 110), scrollTransfers)
+
+	d.transfersTray = container.NewVBox(
+		topBar,
+		trayContent,
+	)
+
 	return container.NewVBox(
 		widget.NewSeparator(),
-		statusTitle,
-		container.NewGridWrap(fyne.NewSize(1200, 110), scrollTransfers),
+		d.transfersTray,
 	)
+}
+
+func (d *DesktopApp) toggleTransfersTray() {
+	if d.transfersTray == nil {
+		return
+	}
+	d.transfersOpen = !d.transfersOpen
+	if len(d.transfersTray.Objects) >= 2 {
+		if d.transfersOpen {
+			d.transfersTray.Objects[1].Show()
+		} else {
+			d.transfersTray.Objects[1].Hide()
+		}
+		d.transfersTray.Refresh()
+	}
+}
+
+func (d *DesktopApp) clearCompletedTransfers() {
+	d.mu.Lock()
+	var remaining []transferDomain.TransferJob
+	for _, j := range d.jobs {
+		if j.Status == transferDomain.JobStatusRunning || j.Status == transferDomain.JobStatusPending {
+			remaining = append(remaining, j)
+		}
+	}
+	d.jobs = remaining
+	d.mu.Unlock()
+
+	if d.transferList != nil {
+		d.transferList.Refresh()
+	}
+	d.showToast("Cleared completed transfers")
 }
 
 func (d *DesktopApp) loadAccounts() {
@@ -636,9 +1017,25 @@ func (d *DesktopApp) selectAccount(acc *accountDomain.Account) {
 	if d.accountSelect.Selected != acc.Name {
 		d.accountSelect.SetSelected(acc.Name)
 	}
+	if d.accountList != nil {
+		d.accountList.Refresh()
+	}
 	d.bucketBadge.SetText("No Bucket Selected")
+	if d.endpointBadge != nil {
+		ep := acc.Region
+		if acc.Endpoint != "" {
+			ep += fmt.Sprintf(" (%s)", acc.Endpoint)
+		}
+		if ep == "" {
+			ep = "global"
+		}
+		d.endpointBadge.SetText(fmt.Sprintf("[%s]", ep))
+	}
+
+	d.updateBreadcrumbs()
 	d.loadBuckets()
 	d.loadTransfers()
+	d.showToast(fmt.Sprintf("Switched to profile '%s'", acc.Name))
 }
 
 func (d *DesktopApp) loadBuckets() {
@@ -665,7 +1062,12 @@ func (d *DesktopApp) loadBuckets() {
 
 	d.mu.Lock()
 	d.buckets = buckets
+	count := len(buckets)
 	d.mu.Unlock()
+
+	if d.bucketTabBadge != nil {
+		d.bucketTabBadge.SetText(fmt.Sprintf("(%d)", count))
+	}
 
 	if d.bucketList != nil {
 		d.bucketList.Refresh()
@@ -692,10 +1094,15 @@ func (d *DesktopApp) selectBucket(name string) {
 	if d.objectTable != nil {
 		d.objectTable.UnselectAll()
 	}
+	if d.bucketList != nil {
+		d.bucketList.Refresh()
+	}
 
 	d.updatePrefixNavUI()
+	d.updateBreadcrumbs()
 	d.selectObject(nil)
 	d.loadObjects()
+	d.showToast(fmt.Sprintf("Opened bucket '%s'", name))
 }
 
 func (d *DesktopApp) loadObjects() {
@@ -820,6 +1227,7 @@ func (d *DesktopApp) loadObjects() {
 			d.mu.Unlock()
 
 			d.updatePrefixNavUI()
+			d.updateBreadcrumbs()
 			d.updateTableViewState(false, totalFiltered)
 		})
 	}()
@@ -851,7 +1259,7 @@ func (d *DesktopApp) updateTableViewState(loading bool, itemCount int) {
 			d.mu.RUnlock()
 			if query != "" {
 				if d.emptyStateMsg != nil {
-					d.emptyStateMsg.SetText(fmt.Sprintf("No objects match query '%s'", query))
+					d.emptyStateMsg.SetText(fmt.Sprintf("No objects match query '%s'.\nTry clearing search or checking prefix.", query))
 				}
 				if d.emptyClearFilterBtn != nil {
 					d.emptyClearFilterBtn.Show()
@@ -921,6 +1329,7 @@ func (d *DesktopApp) applyFilterLocked() {
 	}
 	d.filteredObjects = filtered
 }
+
 func (d *DesktopApp) updatePrefixNavUI() {
 	d.mu.RLock()
 	prefix := d.currentPrefix
@@ -945,6 +1354,7 @@ func (d *DesktopApp) updatePrefixNavUI() {
 		}
 	}
 }
+
 func (d *DesktopApp) navigateToPrefix(prefix string) {
 	d.mu.Lock()
 	d.currentPrefix = prefix
@@ -961,6 +1371,7 @@ func (d *DesktopApp) navigateToPrefix(prefix string) {
 	}
 
 	d.updatePrefixNavUI()
+	d.updateBreadcrumbs()
 	d.selectObject(nil)
 	d.loadObjects()
 }
@@ -1022,6 +1433,7 @@ func (d *DesktopApp) setViewMode(flat bool) {
 	}
 
 	d.updatePrefixNavUI()
+	d.updateBreadcrumbs()
 	d.selectObject(nil)
 	d.loadObjects()
 }
@@ -1060,6 +1472,7 @@ func (d *DesktopApp) selectObject(obj *objectDomain.Object) {
 	}
 	d.selectedObject = obj
 	d.mu.Unlock()
+
 	if d.openFolderBtn != nil {
 		if obj != nil && obj.IsPrefix {
 			d.openFolderBtn.Enable()
@@ -1106,14 +1519,19 @@ func (d *DesktopApp) selectObject(obj *objectDomain.Object) {
 		return
 	}
 
+	class := string(obj.StorageClass)
+	if class == "" {
+		class = "STANDARD"
+	}
 	details := fmt.Sprintf(
-		"Key: %s\nSize: %s (%d bytes)\nStorage Class: %s\nLast Modified: %s\nETag: %s",
+		"Name: %s\nKey: %s\nSize: %s (%d bytes)\nStorage Class: %s\nETag: %s\nLast Modified: %s",
+		filepath.Base(obj.Key),
 		obj.Key,
 		formatBytes(obj.Size),
 		obj.Size,
-		obj.StorageClass,
-		obj.LastModified.Format("2006-01-02 15:04:05 UTC"),
+		class,
 		obj.ETag,
+		obj.LastModified.Format("2006-01-02 15:04:05 UTC"),
 	)
 	if d.metadataLabel != nil {
 		d.metadataLabel.SetText(details)
@@ -1163,41 +1581,38 @@ func (d *DesktopApp) fetchObjectDetailsAndTags(ctx context.Context, key string) 
 			d.mu.RLock()
 			cur := d.selectedObject
 			d.mu.RUnlock()
-			if cur == nil || cur.Key != key {
-				return
-			}
-
-			var sb strings.Builder
-			sb.WriteString(fmt.Sprintf("Key: %s\n", cur.Key))
-			sb.WriteString(fmt.Sprintf("Size: %s (%d bytes)\n", formatBytes(cur.Size), cur.Size))
-			if meta.ContentType != "" {
-				sb.WriteString(fmt.Sprintf("Content-Type: %s\n", meta.ContentType))
-			}
-			sb.WriteString(fmt.Sprintf("Storage Class: %s\n", cur.StorageClass))
-			sb.WriteString(fmt.Sprintf("Last Modified: %s\n", cur.LastModified.Format("2006-01-02 15:04:05 UTC")))
-			if cur.ETag != "" {
-				sb.WriteString(fmt.Sprintf("ETag: %s\n", cur.ETag))
-			}
-			if meta.CacheControl != "" {
-				sb.WriteString(fmt.Sprintf("Cache-Control: %s\n", meta.CacheControl))
-			}
-			if meta.ContentEncoding != "" {
-				sb.WriteString(fmt.Sprintf("Content-Encoding: %s\n", meta.ContentEncoding))
-			}
-			if len(meta.UserMetadata) > 0 {
-				sb.WriteString("User Metadata:\n")
-				for k, v := range meta.UserMetadata {
-					sb.WriteString(fmt.Sprintf("  %s: %s\n", k, v))
+			if cur != nil && cur.Key == key {
+				class := string(cur.StorageClass)
+				if class == "" {
+					class = "STANDARD"
 				}
-			}
-
-			if d.metadataLabel != nil {
-				d.metadataLabel.SetText(strings.TrimRight(sb.String(), "\n"))
+				cType := meta.ContentType
+				if cType == "" {
+					cType = "application/octet-stream"
+				}
+				details := fmt.Sprintf(
+					"Name: %s\nKey: %s\nSize: %s (%d bytes)\nStorage Class: %s\nContent-Type: %s\nETag: %s\nLast Modified: %s",
+					filepath.Base(cur.Key),
+					cur.Key,
+					formatBytes(cur.Size),
+					cur.Size,
+					class,
+					cType,
+					cur.ETag,
+					cur.LastModified.Format("2006-01-02 15:04:05 UTC"),
+				)
+				if d.metadataLabel != nil {
+					d.metadataLabel.SetText(details)
+				}
 			}
 		})
 	}
 
 	tags, err := oService.GetObjectTags(ctx, bucket, key, "")
+	if err != nil {
+		return
+	}
+
 	fyne.Do(func() {
 		d.mu.RLock()
 		cur := d.selectedObject
@@ -1206,12 +1621,6 @@ func (d *DesktopApp) fetchObjectDetailsAndTags(ctx context.Context, key string) 
 			return
 		}
 
-		if err != nil {
-			if d.tagsLabel != nil {
-				d.tagsLabel.SetText("Tags: (None or inaccessible)")
-			}
-			return
-		}
 		if len(tags) == 0 {
 			if d.tagsLabel != nil {
 				d.tagsLabel.SetText("Tags: None")
@@ -1349,16 +1758,21 @@ func (d *DesktopApp) showPreviewDialog(key, statusDesc, previewText string) {
 	entry.Wrapping = fyne.TextWrapWord
 	entry.SetText(previewText)
 
+	copyBtn := widget.NewButtonWithIcon("Copy Content", theme.ContentCopyIcon(), func() {
+		d.window.Clipboard().SetContent(previewText)
+		d.showToast("Preview content copied to clipboard")
+	})
+
 	contentBox := container.NewBorder(
 		descLabel,
-		nil,
+		copyBtn,
 		nil,
 		nil,
 		container.NewGridWrap(fyne.NewSize(680, 420), entry),
 	)
 
 	dModal := dialog.NewCustom(title, "Close", contentBox, d.window)
-	dModal.Resize(fyne.NewSize(720, 500))
+	dModal.Resize(fyne.NewSize(720, 520))
 	dModal.Show()
 }
 
@@ -1393,6 +1807,65 @@ func (d *DesktopApp) generatePresignedURL() {
 	}
 
 	d.presignedLabel.SetText(pURL.URL)
+	d.showToast("Presigned URL generated (expires in 1h)")
+}
+
+func (d *DesktopApp) showCreateFolderDialog() {
+	d.mu.RLock()
+	acc := d.selectedAccount
+	bucket := d.selectedBucket
+	d.mu.RUnlock()
+
+	if acc == nil || bucket == "" {
+		dialog.ShowInformation("Select Bucket", "Please select an account and bucket before creating folders.", d.window)
+		return
+	}
+
+	entry := widget.NewEntry()
+	entry.SetPlaceHolder("folder-name")
+
+	dialog.ShowCustomConfirm("New Folder", "Create", "Cancel", container.NewVBox(
+		widget.NewLabel("Enter folder name:"),
+		entry,
+	), func(confirmed bool) {
+		if !confirmed {
+			return
+		}
+		name := strings.TrimSpace(entry.Text)
+		if name == "" {
+			return
+		}
+		if !strings.HasSuffix(name, "/") {
+			name += "/"
+		}
+
+		d.mu.RLock()
+		fullKey := name
+		if d.currentPrefix != "" && !d.flatMode {
+			fullKey = d.currentPrefix + name
+		}
+		d.mu.RUnlock()
+
+		go func() {
+			ctx := context.Background()
+			oService, err := d.container.CreateObjectService(ctx, acc.Name)
+			if err != nil {
+				dialog.ShowError(err, d.window)
+				return
+			}
+
+			_, err = oService.PutObject(ctx, bucket, fullKey, bytes.NewReader([]byte{}), 0, objectDomain.ObjectMetadata{
+				ContentType: "application/x-directory",
+			})
+			if err != nil {
+				dialog.ShowError(err, d.window)
+				return
+			}
+
+			d.showToast(fmt.Sprintf("Folder '%s' created", fullKey))
+			d.loadObjects()
+		}()
+	}, d.window)
 }
 
 func (d *DesktopApp) showUploadDialog() {
@@ -1423,6 +1896,8 @@ func (d *DesktopApp) showUploadDialog() {
 			key = d.currentPrefix + key
 		}
 		d.mu.RUnlock()
+		d.showToast(fmt.Sprintf("Starting upload of %s...", key))
+
 		go func() {
 			ctx := context.Background()
 			oService, err := d.container.CreateObjectService(ctx, acc.Name)
@@ -1493,11 +1968,12 @@ func (d *DesktopApp) showUploadDialog() {
 				d.loadTransfers()
 			}
 
-			dialog.ShowInformation("Upload Success", fmt.Sprintf("Uploaded %s successfully.", key), d.window)
+			d.showToast(fmt.Sprintf("Uploaded %s successfully", key))
 			d.loadObjects()
 		}()
 	}, d.window)
 }
+
 func (d *DesktopApp) showUploadFolderDialog() {
 	d.mu.RLock()
 	acc := d.selectedAccount
@@ -1519,6 +1995,8 @@ func (d *DesktopApp) showUploadFolderDialog() {
 		}
 
 		folderPath := uri.Path()
+		d.showToast(fmt.Sprintf("Uploading folder %s...", filepath.Base(folderPath)))
+
 		go func() {
 			ctx := context.Background()
 			concurrency := d.container.Config.MaxUploadConcurrency
@@ -1673,7 +2151,7 @@ func (d *DesktopApp) showUploadFolderDialog() {
 			}
 			wg.Wait()
 
-			dialog.ShowInformation("Folder Upload Complete", fmt.Sprintf("Uploaded %d files to %s.", uploadCount, bucket), d.window)
+			d.showToast(fmt.Sprintf("Folder upload complete: %d files to %s", uploadCount, bucket))
 			d.loadObjects()
 		}()
 	}, d.window)
@@ -1698,6 +2176,7 @@ func (d *DesktopApp) showSettingsDialog() {
 			if d.container.TransferService != nil {
 				d.container.TransferService.SetMaxConcurrency(val)
 			}
+			d.showToast("Settings updated")
 		}
 	}, d.window)
 }
@@ -1728,6 +2207,8 @@ func (d *DesktopApp) downloadSelectedObject() {
 			return
 		}
 		defer writer.Close()
+
+		d.showToast(fmt.Sprintf("Starting download of %s...", obj.Key))
 
 		go func() {
 			ctx := context.Background()
@@ -1793,7 +2274,7 @@ func (d *DesktopApp) downloadSelectedObject() {
 				_ = d.container.TransferRepo.UpdateJobStatus(ctx, jobID, transferDomain.JobStatusCompleted, "")
 				d.loadTransfers()
 			}
-			dialog.ShowInformation("Download Complete", fmt.Sprintf("Downloaded %s successfully.", obj.Key), d.window)
+			d.showToast(fmt.Sprintf("Downloaded %s successfully", obj.Key))
 		}()
 	}, d.window)
 }
@@ -1815,7 +2296,14 @@ func (d *DesktopApp) deleteSelectedObject() {
 		return
 	}
 
-	confirm := dialog.NewConfirm("Confirm Delete", fmt.Sprintf("Are you sure you want to delete '%s'?", obj.Key), func(ok bool) {
+	targetKey := obj.Key
+	confirmPrompt := container.NewVBox(
+		widget.NewLabel("Are you sure you want to permanently delete:"),
+		widget.NewLabelWithStyle(targetKey, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewLabel("This action cannot be undone."),
+	)
+
+	dialog.ShowCustomConfirm("Confirm Delete", "Delete", "Cancel", confirmPrompt, func(ok bool) {
 		if !ok {
 			return
 		}
@@ -1827,17 +2315,17 @@ func (d *DesktopApp) deleteSelectedObject() {
 				return
 			}
 
-			err = oService.DeleteObject(ctx, bucket, obj.Key, "")
+			err = oService.DeleteObject(ctx, bucket, targetKey, "")
 			if err != nil {
 				dialog.ShowError(err, d.window)
 				return
 			}
 
 			d.selectObject(nil)
+			d.showToast(fmt.Sprintf("Deleted '%s'", targetKey))
 			d.loadObjects()
 		}()
 	}, d.window)
-	confirm.Show()
 }
 
 func (d *DesktopApp) showCreateBucketDialog() {
@@ -1884,6 +2372,7 @@ func (d *DesktopApp) showCreateBucketDialog() {
 				return
 			}
 
+			d.showToast(fmt.Sprintf("Bucket '%s' created", bucketName))
 			d.loadBuckets()
 		}()
 	}, d.window)
@@ -1900,7 +2389,13 @@ func (d *DesktopApp) showDeleteBucketDialog() {
 		return
 	}
 
-	confirm := dialog.NewConfirm("Confirm Delete", fmt.Sprintf("Are you sure you want to delete bucket '%s'?", bucket), func(ok bool) {
+	confirmPrompt := container.NewVBox(
+		widget.NewLabel("Are you sure you want to delete bucket:"),
+		widget.NewLabelWithStyle(bucket, fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewLabel("All contained objects must already be deleted."),
+	)
+
+	dialog.ShowCustomConfirm("Confirm Delete Bucket", "Delete Bucket", "Cancel", confirmPrompt, func(ok bool) {
 		if !ok {
 			return
 		}
@@ -1922,10 +2417,11 @@ func (d *DesktopApp) showDeleteBucketDialog() {
 			d.selectedBucket = ""
 			d.mu.Unlock()
 			d.bucketBadge.SetText("No Bucket Selected")
+			d.updateBreadcrumbs()
+			d.showToast(fmt.Sprintf("Bucket '%s' deleted", bucket))
 			d.loadBuckets()
 		}()
 	}, d.window)
-	confirm.Show()
 }
 
 func (d *DesktopApp) showAddAccountDialog() {
@@ -1988,11 +2484,13 @@ func (d *DesktopApp) showAddAccountDialog() {
 			return
 		}
 
+		d.showToast(fmt.Sprintf("Added account '%s'", strings.TrimSpace(nameEntry.Text)))
 		d.loadAccounts()
 	}, d.window)
 }
 
 func (d *DesktopApp) refreshAll() {
+	d.showToast("Refreshing accounts, buckets, and objects...")
 	d.loadAccounts()
 	d.loadBuckets()
 	d.loadObjects()
@@ -2017,7 +2515,21 @@ func (d *DesktopApp) loadTransfers() {
 
 	d.mu.Lock()
 	d.jobs = jobs
+	activeCount := 0
+	for _, j := range jobs {
+		if j.Status == transferDomain.JobStatusRunning || j.Status == transferDomain.JobStatusPending {
+			activeCount++
+		}
+	}
 	d.mu.Unlock()
+
+	if d.transferStatus != nil {
+		if activeCount > 0 {
+			d.transferStatus.SetText(fmt.Sprintf("%d active transfer(s)", activeCount))
+		} else {
+			d.transferStatus.SetText("Idle")
+		}
+	}
 
 	if d.transferList != nil {
 		d.transferList.Refresh()

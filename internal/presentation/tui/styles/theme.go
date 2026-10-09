@@ -23,39 +23,39 @@ type Theme struct {
 }
 
 var DarkTheme = Theme{
-	BaseBackground:  lipgloss.Color("#0F172A"),
-	CardBackground:  lipgloss.Color("#1E293B"),
-	HighlightRow:    lipgloss.Color("#334155"),
+	BaseBackground:  lipgloss.Color("#0B0F17"),
+	CardBackground:  lipgloss.Color("#111827"),
+	HighlightRow:    lipgloss.Color("#1F2937"),
 	BorderActive:    lipgloss.Color("#06B6D4"),
 	BorderInactive:  lipgloss.Color("#374151"),
-	TextPrimary:     lipgloss.Color("#F8FAFC"),
-	TextMuted:       lipgloss.Color("#94A3B8"),
-	TextSubtle:      lipgloss.Color("#64748B"),
+	TextPrimary:     lipgloss.Color("#F9FAFB"),
+	TextMuted:       lipgloss.Color("#9CA3AF"),
+	TextSubtle:      lipgloss.Color("#6B7280"),
 	AccentSky:       lipgloss.Color("#38BDF8"),
 	AccentCyan:      lipgloss.Color("#06B6D4"),
-	BadgeSuccess:    lipgloss.Color("#4ADE80"),
-	BadgeWarning:    lipgloss.Color("#FBBF24"),
-	BadgeDanger:     lipgloss.Color("#F87171"),
-	ModalBackground: lipgloss.Color("#1E293B"),
-	ModalBorder:     lipgloss.Color("#818CF8"),
+	BadgeSuccess:    lipgloss.Color("#10B981"),
+	BadgeWarning:    lipgloss.Color("#F59E0B"),
+	BadgeDanger:     lipgloss.Color("#EF4444"),
+	ModalBackground: lipgloss.Color("#111827"),
+	ModalBorder:     lipgloss.Color("#06B6D4"),
 }
 
 var LightTheme = Theme{
 	BaseBackground:  lipgloss.Color("#F8FAFC"),
 	CardBackground:  lipgloss.Color("#FFFFFF"),
 	HighlightRow:    lipgloss.Color("#E2E8F0"),
-	BorderActive:    lipgloss.Color("#0284C7"),
+	BorderActive:    lipgloss.Color("#0891B2"),
 	BorderInactive:  lipgloss.Color("#CBD5E1"),
 	TextPrimary:     lipgloss.Color("#0F172A"),
 	TextMuted:       lipgloss.Color("#475569"),
-	TextSubtle:      lipgloss.Color("#64748B"),
+	TextSubtle:      lipgloss.Color("#94A3B8"),
 	AccentSky:       lipgloss.Color("#0284C7"),
 	AccentCyan:      lipgloss.Color("#0891B2"),
-	BadgeSuccess:    lipgloss.Color("#16A34A"),
+	BadgeSuccess:    lipgloss.Color("#059669"),
 	BadgeWarning:    lipgloss.Color("#D97706"),
 	BadgeDanger:     lipgloss.Color("#DC2626"),
 	ModalBackground: lipgloss.Color("#FFFFFF"),
-	ModalBorder:     lipgloss.Color("#6366F1"),
+	ModalBorder:     lipgloss.Color("#0891B2"),
 }
 
 type Styles struct {
@@ -93,11 +93,11 @@ func NewStyles(t Theme) Styles {
 		ActiveTab: lipgloss.NewStyle().
 			Bold(true).
 			Background(t.BorderActive).
-			Foreground(t.TextPrimary).
+			Foreground(t.CardBackground).
 			Padding(0, 1),
 
 		InactiveTab: lipgloss.NewStyle().
-			Background(t.CardBackground).
+			Background(t.HighlightRow).
 			Foreground(t.TextMuted).
 			Padding(0, 1),
 
@@ -106,7 +106,6 @@ func NewStyles(t Theme) Styles {
 			Background(t.HighlightRow).
 			Foreground(t.AccentSky).
 			Padding(0, 1),
-
 		ActivePanel: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(t.BorderActive),

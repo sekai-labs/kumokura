@@ -92,13 +92,13 @@ func (v ExplorerView) Render(width, height int) string {
 
 func (v ExplorerView) renderLeftPanel(width, height int) string {
 	isActive := v.ActivePaneIndex == 0
-	prefixText := ""
+	headerBadge := "BUCKETS"
 	if isActive {
-		prefixText = "ACTIVE PANE: "
+		headerBadge = "● BUCKETS"
 	}
-	headerTitle := fmt.Sprintf("%sBUCKETS (%d)", prefixText, len(v.Buckets))
+	headerTitle := fmt.Sprintf("%s (%d)", headerBadge, len(v.Buckets))
 	title := v.styles.PanelTitle.Render(headerTitle)
-	maxItems := height - 2
+	maxItems := height - 3
 	if maxItems < 1 {
 		maxItems = 1
 	}
@@ -120,14 +120,19 @@ func (v ExplorerView) renderLeftPanel(width, height int) string {
 
 	var rows []string
 	if len(v.Buckets) == 0 {
-		emptyMsg := v.styles.StatusDesc.Render("No buckets found")
-		rows = append(rows, emptyMsg)
+		emptyCard := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(v.styles.Theme.BorderInactive).
+			Padding(1, 2).
+			Foreground(v.styles.Theme.TextMuted).
+			Render("No buckets found.\nCheck cloud credentials.")
+		rows = append(rows, emptyCard)
 	} else {
 		endIdx := min(len(v.Buckets), bucketOffset+maxItems)
 		for i := bucketOffset; i < endIdx; i++ {
 			b := v.Buckets[i]
 			name := b.Name
-			availTextW := width - 4
+			availTextW := width - 7
 			if availTextW < 4 {
 				availTextW = 4
 			}
@@ -135,11 +140,11 @@ func (v ExplorerView) renderLeftPanel(width, height int) string {
 
 			var rowStr string
 			if i == selectedBucket && isActive {
-				rowStr = v.styles.SelectedRow.Width(width).Render(fmt.Sprintf(" ▶ %s", name))
+				rowStr = v.styles.SelectedRow.Width(width - 2).Render(fmt.Sprintf(" ▶ 🪣 %s", name))
 			} else if i == selectedBucket {
-				rowStr = v.styles.SelectedRow.Width(width).Render(fmt.Sprintf(" ▷ %s", name))
+				rowStr = v.styles.SelectedRow.Width(width - 2).Render(fmt.Sprintf(" ▷ 🪣 %s", name))
 			} else {
-				rowStr = v.styles.NormalRow.Width(width).Render(fmt.Sprintf("   %s", name))
+				rowStr = v.styles.NormalRow.Width(width - 2).Render(fmt.Sprintf("   🪣 %s", name))
 			}
 			rows = append(rows, rowStr)
 		}
@@ -159,13 +164,34 @@ func (v ExplorerView) renderCenterPanel(width, height int) string {
 	if bucketName == "" && len(v.Buckets) > v.SelectedBucket {
 		bucketName = v.Buckets[v.SelectedBucket].Name
 	}
-	s3Uri := fmt.Sprintf("s3://%s/%s", bucketName, v.CurrentPrefix)
-	availTitle := width - 20
-	if availTitle > 10 && lipgloss.Width(s3Uri) > availTitle {
-		s3Uri = truncateLeadingString(s3Uri, availTitle)
+
+	var breadcrumbParts []string
+	breadcrumbParts = append(breadcrumbParts, "s3://"+bucketName)
+	if v.CurrentPrefix != "" {
+		segments := strings.Split(strings.Trim(v.CurrentPrefix, "/"), "/")
+		for _, seg := range segments {
+			if seg != "" {
+				breadcrumbParts = append(breadcrumbParts, seg)
+			}
+		}
 	}
-	titleText := fmt.Sprintf("OBJECT EXPLORER: %s", s3Uri)
-	title := v.styles.PanelTitle.Render(titleText)
+	formattedBreadcrumbs := " " + strings.Join(breadcrumbParts, " ❯ ") + " "
+	availBcWidth := width - 14
+	if availBcWidth > 10 && lipgloss.Width(formattedBreadcrumbs) > availBcWidth {
+		formattedBreadcrumbs = truncateLeadingString(formattedBreadcrumbs, availBcWidth)
+	}
+
+	bcHeader := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(v.styles.Theme.AccentSky).
+		Render(formattedBreadcrumbs)
+
+	headerTitle := "OBJECT EXPLORER"
+	if isActive {
+		headerTitle = "● OBJECT EXPLORER"
+	}
+	panelHeader := lipgloss.JoinHorizontal(lipgloss.Left, v.styles.PanelTitle.Render(headerTitle), " ", bcHeader)
+
 	var visibleObjects []objDomain.Object
 	for _, obj := range v.Objects {
 		if v.CurrentPrefix != "" && (obj.Key == v.CurrentPrefix || obj.Key == strings.TrimSuffix(v.CurrentPrefix, "/")) {
@@ -175,7 +201,7 @@ func (v ExplorerView) renderCenterPanel(width, height int) string {
 	}
 
 	totalItems := len(v.Prefixes) + len(visibleObjects)
-	maxItems := height - 3
+	maxItems := height - 4
 	if maxItems < 1 {
 		maxItems = 1
 	}
@@ -196,16 +222,26 @@ func (v ExplorerView) renderCenterPanel(width, height int) string {
 	}
 
 	var rows []string
-	keyColW := width - 26
+	keyColW := width - 42
 	if keyColW < 12 {
 		keyColW = 12
 	}
-	tblHeader := fmt.Sprintf("   %-*s %9s %12s", keyColW, "Key", "Size", "Last Modified")
-	rows = append(rows, v.styles.StatusKey.Render(tblHeader))
+	tblHeader := fmt.Sprintf("   %-*s %10s %15s %12s", keyColW, "Name", "Size", "Storage Class", "Last Modified")
+	hdrStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(v.styles.Theme.TextSubtle).
+		Border(lipgloss.NormalBorder(), false, false, true, false).
+		BorderForeground(v.styles.Theme.BorderInactive)
+	rows = append(rows, hdrStyle.Width(width-2).Render(tblHeader))
 
 	if totalItems == 0 {
-		emptyMsg := v.styles.StatusDesc.Render("   Prefix is empty (or no objects match filter)")
-		rows = append(rows, emptyMsg)
+		emptyCard := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(v.styles.Theme.BorderInactive).
+			Padding(1, 2).
+			Foreground(v.styles.Theme.TextMuted).
+			Render("Empty directory.\nPress 'u' to upload a file/folder or 'Backspace'/'h' to go up.")
+		rows = append(rows, "", emptyCard)
 	} else {
 		prefixLen := len(v.Prefixes)
 		endIdx := min(totalItems, objectOffset+maxItems)
@@ -217,12 +253,12 @@ func (v ExplorerView) renderCenterPanel(width, height int) string {
 				if v.CurrentPrefix != "" {
 					name = strings.TrimPrefix(name, v.CurrentPrefix)
 				}
-				maxNameW := width - 26
+				maxNameW := keyColW - 3
 				if maxNameW < 8 {
 					maxNameW = 8
 				}
 				name = truncateString(name, maxNameW)
-				display = fmt.Sprintf("📁 %-*s %9s %12s", maxNameW, name, "[DIR]", "-")
+				display = fmt.Sprintf("📁 %-*s %10s %15s %12s", maxNameW, name, "[DIR]", "-", "-")
 			} else {
 				objIdx := i - prefixLen
 				obj := visibleObjects[objIdx]
@@ -231,33 +267,37 @@ func (v ExplorerView) renderCenterPanel(width, height int) string {
 					name = strings.TrimPrefix(name, v.CurrentPrefix)
 				}
 				sizeStr := formatBytes(obj.Size)
+				storageClass := string(obj.StorageClass)
+				if storageClass == "" {
+					storageClass = "STANDARD"
+				}
 				lastModStr := "-"
 				if !obj.LastModified.IsZero() {
 					lastModStr = obj.LastModified.Format("2006-01-02")
 				}
 
-				nameWidth := width - 26
+				nameWidth := keyColW - 3
 				if nameWidth < 8 {
 					nameWidth = 8
 				}
 				name = truncateString(name, nameWidth)
 
-				display = fmt.Sprintf("📄 %-*s %9s %12s", nameWidth, name, sizeStr, lastModStr)
+				display = fmt.Sprintf("📄 %-*s %10s %15s %12s", nameWidth, name, sizeStr, storageClass, lastModStr)
 			}
 
 			var rowStr string
 			if i == selectedObject && isActive {
-				rowStr = v.styles.SelectedRow.Width(width).Render(fmt.Sprintf(" ▶ %s", display))
+				rowStr = v.styles.SelectedRow.Width(width - 2).Render(fmt.Sprintf(" ▶ %s", display))
 			} else if i == selectedObject {
-				rowStr = v.styles.SelectedRow.Width(width).Render(fmt.Sprintf(" ▷ %s", display))
+				rowStr = v.styles.SelectedRow.Width(width - 2).Render(fmt.Sprintf(" ▷ %s", display))
 			} else {
-				rowStr = v.styles.NormalRow.Width(width).Render(fmt.Sprintf("   %s", display))
+				rowStr = v.styles.NormalRow.Width(width - 2).Render(fmt.Sprintf("   %s", display))
 			}
 			rows = append(rows, rowStr)
 		}
 	}
 
-	content := lipgloss.JoinVertical(lipgloss.Left, title, strings.Join(rows, "\n"))
+	content := lipgloss.JoinVertical(lipgloss.Left, panelHeader, strings.Join(rows, "\n"))
 	style := v.styles.InactivePanel
 	if isActive {
 		style = v.styles.ActivePanel
@@ -267,7 +307,11 @@ func (v ExplorerView) renderCenterPanel(width, height int) string {
 
 func (v ExplorerView) renderRightPanel(width, height int) string {
 	isActive := v.ActivePaneIndex == 2
-	title := v.styles.PanelTitle.Render("OBJECT INSPECTOR")
+	headerBadge := "INSPECTOR"
+	if isActive {
+		headerBadge = "● INSPECTOR"
+	}
+	title := v.styles.PanelTitle.Render(headerBadge)
 	var lines []string
 
 	if v.PreviewMetadata != nil {
@@ -285,7 +329,7 @@ func (v ExplorerView) renderRightPanel(width, height int) string {
 			lines = append(lines, "")
 			lines = append(lines, v.styles.PanelTitle.Render("TAGS:"))
 			for _, tag := range v.PreviewTags {
-				tagLine := fmt.Sprintf("  • %s = %s", tag.Key, tag.Value)
+				tagLine := fmt.Sprintf("  🏷 %s = %s", tag.Key, tag.Value)
 				lines = append(lines, truncateString(tagLine, width-4))
 			}
 		}
@@ -299,13 +343,18 @@ func (v ExplorerView) renderRightPanel(width, height int) string {
 			}
 		}
 	} else {
-		lines = append(lines, v.styles.StatusDesc.Render("Select an object to inspect details"))
-		lines = append(lines, "")
-		lines = append(lines, v.styles.StatusDesc.Render("Press [i] to toggle Inspector drawer"))
-		lines = append(lines, v.styles.StatusDesc.Render("Press [p] to generate presigned URL"))
-		lines = append(lines, v.styles.StatusDesc.Render("Press [u] to upload file/folder"))
-		lines = append(lines, v.styles.StatusDesc.Render("Press [d] to download object/folder"))
-		lines = append(lines, v.styles.StatusDesc.Render("Press [x] to delete selected object"))
+		emptyCard := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(v.styles.Theme.BorderInactive).
+			Padding(1, 1).
+			Foreground(v.styles.Theme.TextMuted).
+			Render("No object selected.\nNavigate to an object to inspect.")
+		lines = append(lines, emptyCard, "")
+		lines = append(lines, v.styles.StatusDesc.Render("[i] Toggle Inspector"))
+		lines = append(lines, v.styles.StatusDesc.Render("[p] Generate presigned URL"))
+		lines = append(lines, v.styles.StatusDesc.Render("[u] Upload file or folder"))
+		lines = append(lines, v.styles.StatusDesc.Render("[d] Download object or folder"))
+		lines = append(lines, v.styles.StatusDesc.Render("[x] Delete selected object"))
 	}
 
 	content := lipgloss.JoinVertical(lipgloss.Left, title, strings.Join(lines, "\n"))

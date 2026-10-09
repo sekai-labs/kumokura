@@ -249,4 +249,12 @@ func TestTUI_FolderMarkerNavigationAndPreviewClear(t *testing.T) {
 	uBack := mBack.(Model)
 	assert.Equal(t, "", uBack.explorerView.CurrentPrefix)
 	assert.Nil(t, uBack.explorerView.PreviewContent)
+
+	mL, _ := uBack.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	uL := mL.(Model)
+	assert.Equal(t, "photos/", uL.explorerView.CurrentPrefix)
+
+	mH, _ := uL.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	uH := mH.(Model)
+	assert.Equal(t, "", uH.explorerView.CurrentPrefix)
 }

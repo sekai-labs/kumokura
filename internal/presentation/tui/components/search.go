@@ -16,9 +16,9 @@ type SearchBar struct {
 
 func NewSearchBar(s styles.Styles) SearchBar {
 	ti := textinput.New()
-	ti.Placeholder = "Filter objects by prefix or substring (/)..."
+	ti.Placeholder = "Type filter query... (Enter apply, Esc clear)"
 	ti.CharLimit = 128
-	ti.Width = 40
+	ti.Width = 50
 
 	return SearchBar{
 		Input:  ti,
@@ -31,7 +31,37 @@ func (sb *SearchBar) Render(width int) string {
 	if !sb.Active && strings.TrimSpace(sb.Input.Value()) == "" {
 		return ""
 	}
-	label := sb.styles.StatusKey.Render("Filter: ")
+
+	badge := lipgloss.NewStyle().
+		Background(sb.styles.Theme.BorderActive).
+		Foreground(sb.styles.Theme.CardBackground).
+		Bold(true).
+		Padding(0, 1).
+		Render("🔍 FILTER")
+
+	indicator := ""
+	if sb.Active {
+		indicator = lipgloss.NewStyle().
+			Foreground(sb.styles.Theme.BadgeWarning).
+			Bold(true).
+			Render(" [LIVE] ")
+	} else {
+		indicator = lipgloss.NewStyle().
+			Foreground(sb.styles.Theme.TextSubtle).
+			Render(" [APPLIED] ")
+	}
+
 	inputBox := sb.Input.View()
-	return lipgloss.JoinHorizontal(lipgloss.Top, label, inputBox)
+	hint := lipgloss.NewStyle().
+		Foreground(sb.styles.Theme.TextSubtle).
+		Render("  (Press Esc to reset)")
+
+	inner := lipgloss.JoinHorizontal(lipgloss.Center, badge, indicator, inputBox, hint)
+	return lipgloss.NewStyle().
+		Background(sb.styles.Theme.CardBackground).
+		Border(lipgloss.NormalBorder(), false, false, true, false).
+		BorderForeground(sb.styles.Theme.BorderActive).
+		Padding(0, 1).
+		Width(width).
+		Render(inner)
 }
